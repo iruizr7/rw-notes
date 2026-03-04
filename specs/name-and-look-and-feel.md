@@ -12,6 +12,10 @@ The current package/application identifiers for the fork shall be:
 
 The icon for all purposes shall be the one defined at `app/src/assets/icon.svg`, and the rest of the icon assets are derived from that source file.
 
+The project slogan shall be `Your better brain` in current end-user copy and packaging metadata. Historical changelogs and file headers shall remain untouched.
+
+The repository shall maintain a single top-level `README.md` in English. Translated top-level README variants are not maintained in this fork.
+
 Derived icon assets shall not be edited manually. They must be regenerated from `app/src/assets/icon.svg` through `app/src/assets/generate_icons.py`.
 
 The generated asset set currently includes:

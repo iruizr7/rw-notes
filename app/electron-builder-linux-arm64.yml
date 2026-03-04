@@ -22,7 +22,7 @@ linux:
   desktop: {
     entry: {
       Name: "RW Notes",
-      Comment: "Refactor your thinking",
+      Comment: "Your better brain",
       Type: "Application",
       Categories: "Utility;"
     }

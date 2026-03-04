@@ -1,7 +1,7 @@
 {
   "name": "rw-notes",
   "version": "3.5.8",
-  "description": "Refactor your thinking",
+  "description": "Your better brain",
   "homepage": "https://b3log.org/siyuan",
   "main": "./electron/main.js",
   "packageManager": "pnpm@10.30.1",
