@@ -40,18 +40,18 @@ RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/g
     go build --tags fts5 -v -ldflags "-s -w"
 
 FROM alpine:latest
-LABEL maintainer="Liang Ding<845765@qq.com>"
+LABEL maintainer="Iñigo R."
 
 RUN apk add --no-cache ca-certificates tzdata su-exec
 
 ENV TZ=Asia/Shanghai
-ENV HOME=/home/siyuan
+ENV HOME=/home/rw-notes
 ENV RUN_IN_CONTAINER=true
 EXPOSE 6806
 
-WORKDIR /opt/siyuan/
+WORKDIR /opt/rw-notes/
 COPY --from=go-build --chmod=755 /kernel/kernel /kernel/entrypoint.sh .
 COPY --from=node-build /artifacts .
 
-ENTRYPOINT ["/opt/siyuan/entrypoint.sh"]
-CMD ["/opt/siyuan/kernel"]
+ENTRYPOINT ["/opt/rw-notes/entrypoint.sh"]
+CMD ["/opt/rw-notes/kernel"]
