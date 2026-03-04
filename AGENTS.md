@@ -7,3 +7,6 @@ In this way, we can benefit from the updates from the main project while develop
 
 ## Our changes
 Our changes are described in the `specs/` folder, in several files, each describing a related set of changes. Please maintain them updated, and suggest to create a new file if some requested changes seem to deserve their own spec file.
+
+## Project language
+This forks primary development language and user facing locale will be english, but upstream is chineese. So please, take it into account when searching for references of things; they may be in chineese.
