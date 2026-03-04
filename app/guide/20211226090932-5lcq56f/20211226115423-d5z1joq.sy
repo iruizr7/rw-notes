@@ -31,7 +31,7 @@
 					"Children": [
 						{
 							"Type": "NodeText",
-							"Data": "關閉思源筆記時會自動關閉用戶指南，可以點擊 "
+							"Data": "關閉RW Notes時會自動關閉用戶指南，可以點擊 "
 						},
 						{
 							"Type": "NodeTextMark",
@@ -538,7 +538,7 @@
 													"TextMarkType": "block-ref",
 													"TextMarkBlockRefID": "20211226115356-iecet3h",
 													"TextMarkBlockRefSubtype": "s",
-													"TextMarkTextContent": "思源筆記完全開源"
+													"TextMarkTextContent": "RW Notes完全開源"
 												}
 											]
 										}

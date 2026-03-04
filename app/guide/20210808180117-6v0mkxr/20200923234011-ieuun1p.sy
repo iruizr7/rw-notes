@@ -31,7 +31,7 @@
 					"Children": [
 						{
 							"Type": "NodeText",
-							"Data": "When you close SiYuan Notes, the User Guide will be automatically closed. You can click "
+							"Data": "When you close RW Notes Notes, the User Guide will be automatically closed. You can click "
 						},
 						{
 							"Type": "NodeTextMark",
@@ -600,7 +600,7 @@
 			"Children": [
 				{
 					"Type": "NodeText",
-					"Data": "We hope that in the coming time, SiYuan can become an efficient tool for your life and study, helping you achieve more goals and plans🙏"
+					"Data": "We hope that in the coming time, RW Notes can become an efficient tool for your life and study, helping you achieve more goals and plans🙏"
 				}
 			]
 		},
@@ -675,7 +675,7 @@
 									"TextMarkType": "block-ref",
 									"TextMarkBlockRefID": "20230415111951-vt4y4gg",
 									"TextMarkBlockRefSubtype": "s",
-									"TextMarkTextContent": "SiYuan"
+									"TextMarkTextContent": "RW Notes"
 								},
 								{
 									"Type": "NodeText",

@@ -3,12 +3,12 @@ Caption "${PRODUCT_NAME} ${VERSION}"
 
 !macro preInit
     ${IfNot} ${AtLeastWin10}
-        MessageBox MB_ICONEXCLAMATION "非常抱歉，思源笔记无法在低于 Windows 10 的系统上进行安装$\n$\n\
-            Sorry, SiYuan cannot be installed on systems below Windows 10$\n"
+        MessageBox MB_ICONEXCLAMATION "非常抱歉，RW Notes 无法在低于 Windows 10 的系统上进行安装$\n$\n\
+            Sorry, RW Notes cannot be installed on systems below Windows 10$\n"
         Quit
     ${EndIf}
 
-    nsExec::Exec 'TASKKILL /F /IM "SiYuan.exe"'
+    nsExec::Exec 'TASKKILL /F /IM "RW Notes.exe"'
     nsExec::Exec 'TASKKILL /F /IM "SiYuan-Kernel.exe"'
 !macroend
 
@@ -45,11 +45,11 @@ Caption "${PRODUCT_NAME} ${VERSION}"
     ${EndIf}
 
     ${IfNot} ${isUpdated}
-        MessageBox MB_YESNO "是否需要彻底删除默认工作空间（$PROFILE\SiYuan\）？$\n$\n\
-            Do you want to completely delete the default workspace ($PROFILE\SiYuan\)?$\n" \
+        MessageBox MB_YESNO "是否需要彻底删除默认工作空间（$PROFILE\RW Notes\）？$\n$\n\
+            Do you want to completely delete the default workspace ($PROFILE\RW Notes\)?$\n" \
             /SD IDNO IDYES AcceptedRMWorkspace IDNO SkippedRMWrokspace
             AcceptedRMWorkspace:
-                RMDir /r "$PROFILE\SiYuan\"
+                RMDir /r "$PROFILE\RW Notes\"
             SkippedRMWrokspace:
     ${EndIf}
 

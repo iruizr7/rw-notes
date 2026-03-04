@@ -35,12 +35,12 @@
 			"Children": [
 				{
 					"Type": "NodeText",
-					"Data": "思源筆記提供了 Android 端、iOS 端和鴻蒙端 App，已經上架部分手機應用程式商店，請在應用程式商店中搜尋 "
+					"Data": "RW Notes提供了 Android 端、iOS 端和鴻蒙端 App，已經上架部分手機應用程式商店，請在應用程式商店中搜尋 "
 				},
 				{
 					"Type": "NodeTextMark",
 					"TextMarkType": "code",
-					"TextMarkTextContent": "思源筆記"
+					"TextMarkTextContent": "RW Notes"
 				},
 				{
 					"Type": "NodeText",
@@ -49,7 +49,7 @@
 				{
 					"Type": "NodeTextMark",
 					"TextMarkType": "code",
-					"TextMarkTextContent": "SiYuan"
+					"TextMarkTextContent": "RW Notes"
 				},
 				{
 					"Type": "NodeText",

@@ -35,7 +35,7 @@
 			"Children": [
 				{
 					"Type": "NodeText",
-					"Data": "In SiYuan, some relatively complicated terminology is involved, which can be confusing. In this chapter, we will explain these terms one by one, hoping to help you better understand and use SiYuan."
+					"Data": "In RW Notes, some relatively complicated terminology is involved, which can be confusing. In this chapter, we will explain these terms one by one, hoping to help you better understand and use RW Notes."
 				}
 			]
 		},
@@ -130,7 +130,7 @@
 			"Children": [
 				{
 					"Type": "NodeText",
-					"Data": "In SiYuan, breadcrumbs refer to the block paths connected by right arrows at the top of the editor, which are used to navigate in the block structure. Each layer starts with a block icon, and the preview floating window can be opened by hovering the mouse."
+					"Data": "In RW Notes, breadcrumbs refer to the block paths connected by right arrows at the top of the editor, which are used to navigate in the block structure. Each layer starts with a block icon, and the preview floating window can be opened by hovering the mouse."
 				}
 			]
 		},
@@ -187,7 +187,7 @@
 			"Children": [
 				{
 					"Type": "NodeText",
-					"Data": "In SiYuan, we have extended anchor text in the usual sense from hyperlink elements to block quotes and PDF annotation reference elements. In particular, the anchor text of the block quote element is divided into static anchor text and dynamic anchor text. For details, please refer to the "
+					"Data": "In RW Notes, we have extended anchor text in the usual sense from hyperlink elements to block quotes and PDF annotation reference elements. In particular, the anchor text of the block quote element is divided into static anchor text and dynamic anchor text. For details, please refer to the "
 				},
 				{
 					"Type": "NodeTextMark",
@@ -936,7 +936,7 @@
 			"Children": [
 				{
 					"Type": "NodeText",
-					"Data": "Through the service capabilities provided by the SiYuan kernel "
+					"Data": "Through the service capabilities provided by the RW Notes kernel "
 				},
 				{
 					"Type": "NodeTextMark",
