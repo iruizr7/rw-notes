@@ -1008,15 +1008,7 @@ func IsSubscriber() bool {
 }
 
 func IsPaidUser() bool {
-	if IsSubscriber() {
-		return true
-	}
-
-	u := Conf.GetUser()
-	if nil == u {
-		return false
-	}
-	return 1 == u.UserSiYuanOneTimePayStatus
+	return true
 }
 
 const (

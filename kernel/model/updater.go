@@ -309,6 +309,11 @@ func isVersionUpToDate(releaseVer string) bool {
 var skipInstallPkgPlatformCached = -1
 
 func skipNewVerInstallPkg() bool {
+	if Conf.System.DownloadInstallPkg {
+		Conf.System.DownloadInstallPkg = false
+		Conf.Save()
+	}
+
 	if skipInstallPkgPlatformCached == -1 {
 		skipInstallPkgPlatformCached = 0
 		if !gulu.OS.IsWindows() && !gulu.OS.IsDarwin() {
