@@ -2,15 +2,34 @@
 
 This document describes how RW Notes is put together so future agents can find the correct layer before changing behavior.
 
-It is intentionally practical rather than exhaustive. When the architecture changes materially, this file should be updated in the same change.
+It is intentionally practical rather than exhaustive. The runtime/package sections describe the current code; the final target-architecture section describes planned work, not implemented capabilities. When the architecture changes materially, this file should be updated in the same change.
+
+Product scope, terms, roles, reconciliation rules, and delivery gates are defined in [saas-plan.md](./saas-plan.md). That plan is authoritative for the v0 target.
 
 ## Fork Context
 
-- This repository is a fork of SiYuan and still keeps many internal compatibility identifiers as `siyuan`.
+- **Upstream** means the official SiYuan repository, `siyuan-note/siyuan`. This repository is the RW Notes fork and still keeps many internal compatibility identifiers as `siyuan`.
+- As described in `AGENTS.md`, `master` tracks upstream and `rw-notes` is the project development branch, receiving periodic merges from `master`. Branch policy does not imply a Git remote named `upstream` is already configured.
+- Preserve upstream storage, editor, and shared UI as primary compatibility surfaces. Also preserve stable IDs/references, attribute-view formats, content APIs where feasible, history/import/export, and native/build contracts. See the compatibility objectives in the SaaS plan.
 - User-facing naming should follow [name-and-look-and-feel.md](./name-and-look-and-feel.md).
 - Internal names such as protocol handlers, config paths, environment variables, Go module paths, Electron IPC channel names, and some runtime globals may still use upstream naming. Do not mass-rename those unless explicitly told to.
 
 ## Top-Level Shape
+
+### Related mobile forks
+
+Native apps are maintained as separate GitHub forks, checked out beside this repository under the workspace's `repos/` directory:
+
+| Platform | Fork | Sibling checkout |
+| --- | --- | --- |
+| Android | [iruizr7/rw-notes-android](https://github.com/iruizr7/rw-notes-android) | `../rw-notes-android/` |
+| iOS | [iruizr7/rw-notes-ios](https://github.com/iruizr7/rw-notes-ios) | `../rw-notes-ios/` |
+
+Each mobile checkout uses `origin` for our fork and `upstream` for the corresponding official `siyuan-note/siyuan-*` repository. Its clean `main` branch tracks `upstream/main`; `rw-notes` tracks `origin/rw-notes` and is the fork's default development branch. Integrate upstream changes into `main` first, then merge into `rw-notes`. Preserve the core repository's existing `master`/`rw-notes` structure.
+
+The mobile forks were initialized from their upstream heads on 2026-10-22. Repository setup does not establish compatibility with the core's current upstream baseline or completion of native builds. Before release, pin and test a core/native commit combination and build the shared frontend/kernel artifacts from that core revision. Mobile development targets Android and iOS; HarmonyOS is out of scope.
+
+### Core repository directories
 
 - `app/`: TypeScript frontend, Electron desktop shell, static assets, themes, icons, bundled guide content, and webpack build definitions.
 - `kernel/`: Go backend process responsible for workspace boot, HTTP/WebSocket serving, persistence, indexing, sync, import/export, and most business logic.
@@ -28,7 +47,7 @@ In browser or Docker-style deployments, the Go kernel can serve the frontend ass
 
 ### 1. Boot
 
-- `kernel/main.go` is the non-mobile kernel entrypoint.
+- `kernel/main.go` is the non-mobile kernel entrypoint; `kernel/mobile/kernel.go` exposes the mobile kernel integration.
 - `kernel/util/working.go` parses CLI flags and environment variables, resolves the workspace, prepares paths, enforces the workspace lock, and sets runtime globals.
 - `kernel/model/conf.go` loads and normalizes persisted app configuration.
 - `kernel/sql/*.go` initializes SQLite databases and search indexes.
@@ -65,7 +84,7 @@ In most features the call path is:
 - handler in `kernel/api`
 - business logic in `kernel/model`
 - persistence/index/filesystem work in `kernel/sql`, `kernel/filesys`, `kernel/treenode`, `kernel/cache`, or `kernel/util`
-- optional push notification back to clients via WebSocket
+- optional live update event back to clients via WebSocket (distinct from the planned v1 email/mobile push notifications)
 
 If a change requires modifying both `kernel/api` and `kernel/model`, the API file should stay thin. Push real logic down into `model`.
 
@@ -125,7 +144,8 @@ Important details:
 
 - The main SQLite databases live under `workspace/temp/`, not at repository root.
 - The kernel also keeps compatibility state under `~/.config/siyuan/`, including `workspace.json`, `port.json`, shortcuts, and some desktop boot metadata.
-- The workspace is single-writer guarded by a lock file.
+- The workspace is single-writer guarded by a lock file. Planned offline devices need distinct local replicas; independent kernels must not share one writable workspace volume.
+- Core SQLite indexes can be rebuilt from content. Planned identity, pending operations, conflict history, and synchronization metadata require separate durable storage and must not depend on index rebuilds preserving them.
 
 ## Communication Patterns
 
@@ -133,13 +153,15 @@ Important details:
 
 - Most client mutations and reads go through `POST /api/...`.
 - `kernel/api/router.go` is the main registration point.
-- Authentication, role checks, and read-only checks are applied in the API layer before reaching business logic.
+- Authentication, role checks, and read-only checks are applied in the API layer before reaching business logic. Current shared access-code/API-token paths grant administrator access; many content and preference routes also require administrator privileges. This is not yet the v0 membership model.
+- Existing `RoleAdministrator`, `RoleEditor`, and `RoleReader` constants can map to product roles **Admin**, **Write**, and **Read**. Every route still needs classification by capability; simply assigning these constants does not implement the intended permissions.
 
 ### WebSocket
 
 - `/ws` is used for live UI updates, reloads, progress, sync notifications, and some command-style messages.
 - `app/src/layout/Model.ts` is the main client-side abstraction for WebSocket connections.
 - Kernel pushes are important for keeping multiple windows/sessions coherent. If a backend change mutates visible state, check whether a push/reload message is also needed.
+- Existing broadcasts are not a durable replay or offline reconciliation protocol. v0 needs actor/workspace identity, ordered event cursors, reconnect recovery, and safe application while a client has local pending edits. Do not treat a reload as sufficient concurrent-edit handling.
 
 ### Static Serving
 
@@ -176,3 +198,63 @@ This file should be updated when any of the following changes happen:
 - workspace layout or persistence placement changes
 - desktop/browser/mobile responsibility boundaries move
 - a fork-specific compatibility exception becomes an intentional RW Notes convention
+
+## Planned v0 Architecture and Extension Boundaries
+
+**Status: proposed design boundaries; implementation pending.** The agreed product target is one org per workspace, Admin/Write/Read roles, API/MCP agent collaboration, near-realtime connected updates, and offline-first desktop/mobile apps. Conflicts select the latest timestamp automatically and preserve the displaced version in recoverable history.
+
+### Service, server kernel, and device responsibilities
+
+| Component | Owns | Boundary to preserve |
+| --- | --- | --- |
+| Control plane (new) | Accounts, orgs, memberships, credentials, routing, provisioning, lifecycle, operator policy | Keep tenant/service concerns outside core content storage; one org/workspace per server kernel. |
+| Kernel identity adapter (new) | Verified actor/workspace context, product-role mapping, authorization and revocation integration | Extend HTTP, WebSocket, static/file, and other exposed entrypoints consistently; no hosted fallback to universal access-code/admin credentials. |
+| Collaboration adapter (new) | Operation identity, edit timestamps, dependency/revision information, conflict selection, durable history, ordered events, catch-up | Integrate at real mutation and commit boundaries; do not replace canonical `.sy` content or the editor model. |
+| Server kernel (extended) | Accepted shared content, existing transactions, indexing, asset and database operations | Continue serializing authoritative writes; never rely on serialization alone to merge offline replicas. |
+| Desktop/mobile local kernel (extended) | Local content replica, offline editing, durable pending queue, replay/catch-up | Preserve local native behavior while separating each org's content and credentials. Local save is not server acceptance. |
+| Shared frontend (extended) | Existing editing/reading UI plus org/role, sync state, personal preferences, recoverable-conflict history | Reuse web/desktop/mobile code and preserve active local input on remote updates. |
+| API/MCP adapter (new/extended) | Supported agent operations, credential context, observable outcomes | Use the same permission and reconciliation pipeline; no direct filesystem writes or bypass credentials. |
+
+The planned connected flow is:
+
+1. Authenticate a human or agent and bind a request/device to one org/workspace.
+2. A native device persists its edit and pending operation locally; an online web/API/MCP client submits its mutation through the authorized interface.
+3. The server validates current membership, operation identity, timestamp policy, and structural preconditions within the authoritative mutation ordering.
+4. Non-conflicting changes are applied; conflicting changes select the timestamp winner. Preserve the losing version, whether it came from the server or the incoming operation.
+5. Commit content and recovery metadata through a crash-recoverable mechanism. Acknowledge according to the documented durability boundary and publish an ordered event.
+6. Other authorized clients apply or reconcile the event without destroying unsent input. A disconnected native device follows the same rules when it catches up.
+
+This flow requires a design for consistency across file-backed content and separate metadata. A successful content write followed by a best-effort history/event write is insufficient. Prototype the journal/recovery boundary before broad client integration.
+
+### Inherited vendor-service removal
+
+v0 removes the current SiYuan cloud and related Liuyun/Liandi service integrations. This is an intentional compatibility exception: preserve reusable local primitives, but remove vendor-specific accounts, entitlements, payments, hosted sync/storage/publishing, API routes, background requests, configuration, and UI/native hooks. The detailed scope and release checks are in [saas-plan.md](./saas-plan.md).
+
+Initial inventory locations include `app/src/config/account.ts`, `app/src/config/util/about.ts`, `app/src/mobile/settings/account.ts`, `kernel/model/updater.go`, and the cloud upload/export paths in `kernel/model/assets.go` and `kernel/model/export.go`. This list is a starting point, not a complete endpoint inventory; trace callers, routes, startup jobs, native purchase bridges, and service URL configuration too.
+
+Audit update/package/resource delivery and any reporting dependencies so ordinary operation has no automatic calls or fallback to the removed services. Replace useful capabilities with explicitly chosen sources or retire them. Keep source attribution and user content intact. Local snapshots and provider-neutral storage adapters can remain when compatible with the new sync boundary; an upstream vendor account cannot remain a prerequisite. Validate clean and migrated profiles, including outbound traffic, after removal and future upstream merges.
+
+### Configuration and storage boundaries
+
+- Keep canonical content in upstream formats; use separately versioned durable metadata for service identities, user preferences, device queues, revisions, history, and replay.
+- Split workspace policy, user-within-workspace preferences, and device/session state. Do not mass-move `data/storage` or broadcast personal writes to every member.
+- `BoxConf.Closed` currently affects shared mount/index behavior. Add personal notebook visibility without letting a user's sidebar action unmount content for everyone.
+- Keep service/provider secrets out of ordinary config responses. A Read member can update personal preferences without gaining content-write permission.
+- Coordinate backups of content, memberships, and collaboration metadata. Full restore must invalidate obsolete replay cursors or use a new sync generation, while retaining pending client work for recovery.
+- Do not run upstream snapshot/file sync as an independent second writer over a collaborative replica. Decide its allowed import/backup role explicitly.
+
+### Compatibility and design review rules
+
+- Prefer additive modules with small integration hooks. Document why any editor, transaction, storage, or native bridge change is necessary.
+- Preserve IDs, block/reference semantics, database formats, import/export, and index rebuild behavior. Retain compatibility-sensitive internal naming without a planned forced rename.
+- Audit every mutation path, including raw file routes, imports, restore, watchers, scheduled jobs, and plugins. Unsupported hosted operations must fail explicitly; supported ones must join the same permission/history/sync boundary.
+- Classify events as workspace content, user-private, device/session, or operator-only before broadcasting them.
+- Version client/server capabilities and define mixed-version behavior. An incompatible client must fail visibly instead of silently writing without required timestamp/history metadata.
+- Track native wrapper/build dependencies outside this repository. A working `app/src/mobile` web build does not establish a shippable Android/iOS app.
+- Test an upstream merge against storage, editor, API, native clients, and offline reconciliation fixtures. Record actual integration effort and keep a ledger of intentional divergence.
+
+### Open architecture decisions
+
+The SaaS plan owns the decision list and milestone gates. Highest priority: conflict unit (block/field/document), edit timestamp and clock-skew rules, structural conflict handling, recoverable-version retention, durable journal placement, identity provider, and native platform matrix. No CRDT/OT engine, new content database, or exact control-plane stack is selected by this document.
+
+Later v1 notifications, summaries, and Todoist-like database workflows should consume stable content IDs and versioned authorized events. They should not force speculative changes into the v0 editor or content model.
