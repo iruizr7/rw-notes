@@ -2,6 +2,7 @@ import {Wnd} from "./Wnd";
 import {genUUID} from "../util/genID";
 import {addResize, fixWndFlex1} from "./util";
 import {resizeTabs} from "./tabUtil";
+import {splitPanePercentages} from "./resizePane";
 /// #if MOBILE
 // 检测移动端是否引入了桌面端的代码
 console.error("Need remove unused code");
@@ -42,7 +43,7 @@ export class Layout {
         }
     }
 
-    addLayout(child: Layout, id?: string) {
+    addLayout(child: Layout, id?: string, after = true) {
         if (!id) {
             this.children.splice(this.children.length, 0, child);
             if (this) {
@@ -51,8 +52,12 @@ export class Layout {
         } else {
             this.children.find((item, index) => {
                 if (item.id === id) {
-                    this.children.splice(index + 1, 0, child);
-                    item.element.after(child.element);
+                    this.children.splice(after ? index + 1 : index, 0, child);
+                    if (after) {
+                        item.element.after(child.element);
+                    } else {
+                        item.element.before(child.element);
+                    }
                     return true;
                 }
             });
@@ -62,37 +67,48 @@ export class Layout {
         } else {
             child.element.style[(this && this.direction === "lr") ? "width" : "height"] = child.size;
         }
-        addResize(child);
+        addResize(child, after);
         child.parent = this;
     }
 
-    addWnd(child: Wnd, id?: string) {
+    addWnd(child: Wnd, id?: string, after = true) {
+        const isCenterSplit = !!id && !!this.element.closest(".layout__center");
+        const splitDirection = this.direction === "lr" ? "width" : "height";
+        const splitSizes = isCenterSplit ? this.children.map((item) =>
+            this.direction === "lr" ? item.element.clientWidth : item.element.clientHeight) : [];
+        const splitIndex = isCenterSplit ? this.children.findIndex((item) => item.id === id) : -1;
+        const splitPercentages = splitPanePercentages(splitSizes, splitIndex, after);
         if (!id) {
             this.children.splice(this.children.length, 0, child);
             this.element.append(child.element);
         } else {
             this.children.find((item, index) => {
                 if (item.id === id) {
-                    this.children.splice(index + 1, 0, child);
-                    if (this.direction === "lr") {
-                        // 向右分屏，左侧文档抖动，移除动画和边距
-                        item.element.querySelectorAll(".protyle-content").forEach((element: HTMLElement) => {
-                            if (!element.parentElement.classList.contains("fn__none")) {
-                                element.classList.remove("protyle-content--transition");
-                                (element.querySelector(".protyle-wysiwyg") as HTMLElement).style.padding = "";
-                                element.classList.add("protyle-content--transition");
-                            }
-                        });
+                    if (after) {
+                        this.children.splice(index + 1, 0, child);
+                    } else {
+                        this.children.splice(index, 0, child);
                     }
-                    item.element.after(child.element);
+                    if (after) {
+                        item.element.after(child.element);
+                    } else {
+                        item.element.before(child.element);
+                    }
                     return true;
                 }
             });
         }
         if (id) {
-            fixWndFlex1(this);
+            if (splitPercentages && splitIndex > -1) {
+                this.children.forEach((item, index) => {
+                    item.element.classList.remove("fn__flex-1");
+                    item.element.style[splitDirection] = splitPercentages[index] + "%";
+                });
+            } else {
+                fixWndFlex1(this);
+            }
         }
-        addResize(child);
+        addResize(child, after);
         resizeTabs(false);
         child.parent = this;
     }

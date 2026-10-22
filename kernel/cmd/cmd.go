@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -31,7 +31,7 @@ type Cmd interface {
 
 type BaseCmd struct {
 	id          float64
-	param       map[string]interface{}
+	param       map[string]any
 	session     *melody.Session
 	PushPayload *util.Result
 }
@@ -49,7 +49,7 @@ func (cmd *BaseCmd) Push() {
 	util.PushEvent(cmd.PushPayload)
 }
 
-func NewCommand(cmdStr string, cmdId float64, param map[string]interface{}, session *melody.Session) (ret Cmd) {
+func NewCommand(cmdStr string, cmdId float64, param map[string]any, session *melody.Session) (ret Cmd) {
 	baseCmd := &BaseCmd{id: cmdId, param: param, session: session}
 	switch cmdStr {
 	case "closews":

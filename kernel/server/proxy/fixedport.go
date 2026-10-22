@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -18,16 +18,18 @@ package proxy
 
 import (
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 
 	"github.com/siyuan-note/logging"
 	"github.com/siyuan-note/siyuan/kernel/util"
 	"github.com/soheilhy/cmux"
 )
 
-func InitFixedPortService(host string, useTLS bool, certPath, keyPath string) {
+func InitFixedPortService(host string, certPath, keyPath string) {
 	if util.FixedPort != util.ServerPort {
 		if util.IsPortOpen(util.FixedPort) {
 			return
@@ -36,54 +38,24 @@ func InitFixedPortService(host string, useTLS bool, certPath, keyPath string) {
 		addr := host + ":" + util.FixedPort
 
 		// 启动一个固定 6806 端口的反向代理服务器，这样浏览器扩展才能直接使用 127.0.0.1:6806，不用配置端口
-		proxy := httputil.NewSingleHostReverseProxy(util.ServerURL)
+		proxy := newFixedPortReverseProxy(util.ServerURL)
 
-		if useTLS {
-			proxy.Transport = &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			}
-
+		if "" != certPath {
 			logging.LogInfof("fixed port service [%s] is running (HTTP/HTTPS dual mode)", addr)
 
-			ln, err := net.Listen("tcp", addr)
-			if err != nil {
-				logging.LogWarnf("boot fixed port service [%s] failed: %s", addr, err)
+			ln, listenErr := net.Listen("tcp", addr)
+			if listenErr != nil {
+				logging.LogWarnf("boot fixed port service [%s] failed: %s", addr, listenErr)
 				return
 			}
 
-			m := cmux.New(ln)
-
-			// Match TLS connections (first byte 0x16 indicates TLS handshake)
-			tlsL := m.Match(cmux.TLS())
-			// Match HTTP (anything else)
-			httpL := m.Match(cmux.Any())
-
-			cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-			if err != nil {
-				logging.LogWarnf("failed to load TLS cert for fixed port service: %s", err)
-				ln.Close()
-				return
-			}
-			tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
-
-			tlsListener := tls.NewListener(tlsL, tlsConfig)
-
-			go func() {
-				httpServer := &http.Server{Handler: proxy}
-				if err := httpServer.Serve(httpL); err != nil && err != cmux.ErrListenerClosed {
-					logging.LogWarnf("fixed port HTTP server error: %s", err)
+			// 双栈监听下仍需按开关强制加密，否则明文的 6806 端口会继续放行全部 API 请求
+			// https://github.com/siyuan-note/siyuan/security/advisories/GHSA-hpj5-f7cj-vvwr
+			handler := util.TLSRedirectHandler(proxy)
+			if _, _, serveErr := util.ServeMultiplexed(ln, handler, certPath, keyPath, nil, nil); serveErr != nil {
+				if !errors.Is(serveErr, cmux.ErrListenerClosed) && !errors.Is(serveErr, http.ErrServerClosed) {
+					logging.LogWarnf("fixed port cmux serve error: %s", serveErr)
 				}
-			}()
-
-			go func() {
-				httpsServer := &http.Server{Handler: proxy}
-				if err := httpsServer.Serve(tlsListener); err != nil && err != cmux.ErrListenerClosed {
-					logging.LogWarnf("fixed port HTTPS server error: %s", err)
-				}
-			}()
-
-			if err := m.Serve(); err != nil && err != cmux.ErrListenerClosed {
-				logging.LogWarnf("fixed port cmux serve error: %s", err)
 			}
 		} else {
 			logging.LogInfof("fixed port service [%s] is running", addr)
@@ -92,5 +64,26 @@ func InitFixedPortService(host string, useTLS bool, certPath, keyPath string) {
 			}
 		}
 		logging.LogInfof("fixed port service [%s] is stopped", addr)
+	}
+}
+
+func newFixedPortReverseProxy(target *url.URL) *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{
+		Rewrite: func(request *httputil.ProxyRequest) {
+			request.SetURL(target)
+			request.Out.Host = request.In.Host
+			request.SetXForwarded()
+
+			// 反代以 HTTPS 回源内核，内核据此会把明文客户端的连接误判为 TLS，
+			// 因此显式标记客户端侧的真实连接方式；调用方伪造的同名头部一律清除。
+			// 这里必须判断原始请求（request.In）而不是改写后的请求：改写后的请求是 HTTPS 回源。
+			request.Out.Header.Set(util.ClientTLSHeader, util.ClientTLSHeaderPlaintextValue)
+			if request.In.TLS != nil {
+				request.Out.Header.Set(util.ClientTLSHeader, util.ClientTLSHeaderValue)
+			}
+		},
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
 	}
 }

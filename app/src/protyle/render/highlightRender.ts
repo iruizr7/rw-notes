@@ -1,10 +1,21 @@
 import {addScript} from "../util/addScript";
 import {Constants} from "../../constants";
-import {focusByOffset} from "../util/selection";
+import {createRangeByOffsets, focusByRange, getSelectionOffset} from "../util/selectionOffsets";
+import {getContenteditableElement} from "../wysiwyg/getBlock";
 import {setCodeTheme} from "./util";
+import {escapeHtml} from "../../util/escape";
+import {isFoldedRenderContent} from "./foldedContent";
+
+const focusCodeByOffset = (element: Element, start: number, end: number) => {
+    const range = createRangeByOffsets(getContenteditableElement(element) || element, start, end);
+    if (range) {
+        focusByRange(range);
+    }
+    return range;
+};
 
 export const highlightRender = (element: Element, cdn = Constants.PROTYLE_CDN, zoom = 1) => {
-    let codeElements: NodeListOf<Element>;
+    let codeElements: NodeListOf<Element> | Element[];
     let isPreview = false;
     if (element.classList.contains("code-block")) {
         // 编辑器内代码块编辑渲染
@@ -24,35 +35,42 @@ export const highlightRender = (element: Element, cdn = Constants.PROTYLE_CDN, z
             codeElements = element.querySelectorAll(".code-block .hljs");
         }
     }
+    codeElements = Array.from(codeElements).filter(item => !isFoldedRenderContent(item));
     if (codeElements.length === 0) {
         return;
     }
 
     setCodeTheme(cdn);
 
-    addScript(`${cdn}/js/highlight.js/highlight.min.js?v=11.11.1`, "protyleHljsScript").then(() => {
+    addScript(`${cdn}/js/highlight.js/highlight.min.js?v=11.12.0`, "protyleHljsScript").then(() => {
         addScript(`${cdn}/js/highlight.js/third-languages.js?v=2.0.1`, "protyleHljsThirdScript").then(() => {
             codeElements.forEach((block: HTMLElement) => {
+                if (block.getAttribute("data-render") === "true") {
+                    return;
+                }
+                block.setAttribute("data-render", "true");
                 const iconElements = block.parentElement.querySelectorAll(".protyle-icon");
                 if (iconElements.length === 2) {
                     iconElements[0].setAttribute("aria-label", window.siyuan.languages.copy);
                     iconElements[1].setAttribute("aria-label", window.siyuan.languages.more);
                 }
-                if (block.getAttribute("data-render") === "true") {
-                    return;
-                }
                 const wbrElement = block.querySelector("wbr");
+                const editable = block.querySelector<HTMLElement>('[contenteditable="true"]');
+                const selection = getSelection();
+                // 高亮会重建文本节点，需保留已恢复到代码正文中的选区。
+                const codeRange = !wbrElement && editable && selection.rangeCount &&
+                    editable.contains(selection.anchorNode) && editable.contains(selection.focusNode) ?
+                    selection.getRangeAt(0) : undefined;
+                const codeSelection = codeRange ? getSelectionOffset(editable, undefined, codeRange) : undefined;
+                const backward = codeRange && !codeRange.collapsed && selection.anchorNode === codeRange.endContainer &&
+                    selection.anchorOffset === codeRange.endOffset;
                 let startIndex = 0;
                 if (wbrElement) {
-                    let previousSibling = wbrElement.previousSibling;
-                    while (previousSibling) {
-                        startIndex += previousSibling.textContent.length;
-                        while (!previousSibling.previousSibling && previousSibling.parentElement.tagName !== "DIV") {
-                            // 高亮 span 中输入
-                            previousSibling = previousSibling.parentElement;
-                        }
-                        previousSibling = previousSibling.previousSibling;
-                    }
+                    // 从代码正文起点计算偏移，包含高亮嵌套节点之前的所有文本。
+                    const prefixRange = document.createRange();
+                    prefixRange.selectNodeContents(editable || block);
+                    prefixRange.setEndBefore(wbrElement);
+                    startIndex = prefixRange.toString().length;
                     wbrElement.remove();
                 }
 
@@ -69,7 +87,6 @@ export const highlightRender = (element: Element, cdn = Constants.PROTYLE_CDN, z
                     language = "plaintext";
                 }
                 block.classList.add("hljs");
-                block.setAttribute("data-render", "true");
                 const autoEnter = block.parentElement.getAttribute("linewrap");
                 const ligatures = block.parentElement.getAttribute("ligatures");
                 const lineNumber = block.parentElement.getAttribute("linenumber");
@@ -109,31 +126,38 @@ export const highlightRender = (element: Element, cdn = Constants.PROTYLE_CDN, z
                         ignoreIllegals: true
                     }).value;
                 if (wbrElement && getSelection().rangeCount > 0) {
-                    focusByOffset(block, startIndex, startIndex);
+                    focusCodeByOffset(block, startIndex, startIndex);
+                } else if (codeSelection) {
+                    const range = focusCodeByOffset(editable, codeSelection.start, codeSelection.end);
+                    if (backward && range) {
+                        selection.setBaseAndExtent(range.endContainer, range.endOffset, range.startContainer, range.startOffset);
+                    }
                 }
             });
         });
     });
 };
 
-export const lineNumberRender = (block: HTMLElement, zoom = 1) => {
-    const lineNumber = block.parentElement.getAttribute("lineNumber");
+export const lineNumberRender = (hljsElement: HTMLElement, zoom = 1) => {
+    const lineNumber = hljsElement.parentElement.getAttribute("lineNumber");
     if (lineNumber === "false") {
         return;
     }
     if (!window.siyuan.config.editor.codeSyntaxHighlightLineNum && lineNumber !== "true") {
         return;
     }
+    const codeElement = hljsElement.lastElementChild as HTMLElement;
+    if (hljsElement.firstElementChild.clientHeight === codeElement.clientHeight && codeElement.style.wordBreak !== "break-word") {
+        return;
+    }
     // clientHeight 总是取的整数
-    block.parentElement.style.lineHeight = `${((parseInt(block.parentElement.style.fontSize) || window.siyuan.config.editor.fontSize) * 1.625 * 0.85).toFixed(0)}px`;
-    const codeElement = block.lastElementChild as HTMLElement;
-
+    hljsElement.parentElement.style.lineHeight = `${((parseInt(hljsElement.parentElement.style.fontSize) || window.siyuan.config.editor.fontSize) * 1.625 * 0.85).toFixed(0)}px`;
     const lineList = codeElement.textContent.split(/\r\n|\r|\n|\u2028|\u2029/g);
     if (lineList[lineList.length - 1] === "" && lineList.length > 1) {
         lineList.pop();
     }
-    block.firstElementChild.innerHTML = `<span>${lineList.length}</span>`;
-    codeElement.style.paddingLeft = `${block.firstElementChild.clientWidth + 16}px`;
+    hljsElement.firstElementChild.innerHTML = `<span>${lineList.length}</span>`;
+    codeElement.style.paddingLeft = `${hljsElement.firstElementChild.clientWidth + 16}px`;
     let lineNumberHTML = "";
     if (codeElement.style.wordBreak === "break-word") {
         // 代码块开启了换行
@@ -141,36 +165,36 @@ export const lineNumberRender = (block: HTMLElement, zoom = 1) => {
         const lineNumberTemp = document.createElement("div");
         lineNumberTemp.className = "hljs";
         // 不能使用 codeElement.clientWidth，被忽略小数点导致宽度不一致
-        lineNumberTemp.setAttribute("style", `padding-left:${codeElement.style.paddingLeft};
+        // 需要手动复制字体样式 https://ld246.com/article/1762527296449
+        lineNumberTemp.innerHTML = `<div contenteditable="true" style="padding-left:${codeElement.style.paddingLeft};
 width: ${codeElement.getBoundingClientRect().width / zoom}px;
 white-space:${codeElementStyle.whiteSpace};
 word-break:${codeElementStyle.wordBreak};
 font-variant-ligatures:${codeElementStyle.fontVariantLigatures};
-padding-right:0;max-height: none;box-sizing: border-box;position: absolute;padding-top:0 !important;padding-bottom:0 !important;min-height:auto !important;`);
-        lineNumberTemp.setAttribute("contenteditable", "true");
-        block.insertAdjacentElement("afterend", lineNumberTemp);
+font-family:${codeElementStyle.fontFamily};
+font-size:${codeElementStyle.fontSize};
+line-height:${codeElementStyle.lineHeight};
+font-weight:${codeElementStyle.fontWeight};
+padding-right:0;max-height: none;box-sizing: border-box;position: absolute;padding-top:0 !important;padding-bottom:0 !important;min-height:auto !important;"></div>`;
+        lineNumberTemp.firstElementChild.innerHTML = lineList.map(line =>
+            `<div>${line.trim() ? escapeHtml(line) : "&nbsp;" }</div>`
+        ).join("");
+        hljsElement.insertAdjacentElement("afterend", lineNumberTemp);
 
-        lineList.map((line) => {
-            // windows 下空格高度为 0 https://github.com/siyuan-note/siyuan/issues/12346
-            lineNumberTemp.textContent = line.trim() ? line : "<br>";
-            // 不能使用 lineNumberTemp.getBoundingClientRect().height.toFixed(1) 否则
-            // windows 需等待字体下载完成再计算，否则导致不换行，高度计算错误
-            // https://github.com/siyuan-note/siyuan/issues/9029
-            // https://github.com/siyuan-note/siyuan/issues/9140
-            lineNumberHTML += `<span style="height:${lineNumberTemp.clientHeight}px"></span>`;
-        });
+        const childNodes = lineNumberTemp.firstElementChild.children;
+        for (let i = 0; i < childNodes.length; i++) {
+            lineNumberHTML += `<span style="height:${childNodes[i].clientHeight}px"></span>`;
+        }
         lineNumberTemp.remove();
     } else {
         lineNumberHTML = "<span></span>".repeat(lineList.length);
     }
-
-    block.firstElementChild.innerHTML = lineNumberHTML;
-
+    hljsElement.firstElementChild.innerHTML = lineNumberHTML;
     // https://github.com/siyuan-note/siyuan/issues/12726
-    if (block.scrollHeight > block.clientHeight) {
+    if (hljsElement.scrollHeight > hljsElement.clientHeight) {
         if (getSelection().rangeCount > 0) {
             const range = getSelection().getRangeAt(0);
-            if (block.contains(range.startContainer)) {
+            if (hljsElement.contains(range.startContainer)) {
                 const brElement = document.createElement("br");
                 range.insertNode(brElement);
                 brElement.scrollIntoView({block: "nearest"});

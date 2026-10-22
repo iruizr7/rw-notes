@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -54,12 +54,12 @@ func setDatabaseVer() {
 }
 
 func putStat(tx *sql.Tx, key, value string) (err error) {
-	stmt := "DELETE FROM stat WHERE `key` = '" + key + "'"
-	if err = execStmtTx(tx, stmt); err != nil {
+	stmt := "DELETE FROM stat WHERE `key` = ?"
+	if err = execStmtTx(tx, stmt, key); err != nil {
 		return
 	}
 
-	stmt = "INSERT INTO stat VALUES ('" + key + "', '" + value + "')"
-	err = execStmtTx(tx, stmt)
+	stmt = "INSERT INTO stat VALUES (?, ?)"
+	err = execStmtTx(tx, stmt, key, value)
 	return
 }

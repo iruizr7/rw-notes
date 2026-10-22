@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,43 +17,26 @@
 package api
 
 import (
-	"net/http"
+	"github.com/siyuan-note/siyuan/kernel/apicontract"
 
 	"github.com/88250/gulu"
 	"github.com/gin-gonic/gin"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
 
-func pandoc(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var pandoc = contractHandler(apicontract.Pandoc, func(c *gin.Context, request apicontract.PandocRequest) apicontract.Response[apicontract.PandocData] {
+	dirStr := request.Dir
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	var dir string
+	if dirStr != "" {
+		dir = dirStr
+	} else {
+		dir = gulu.Rand.String(7)
 	}
-
-	dir := gulu.Rand.String(7)
-	dirArg := arg["dir"]
-	if nil != dirArg {
-		dir = dirArg.(string)
-	}
-
-	pandocArgs := arg["args"].([]interface{})
-	var args []string
-	for _, v := range pandocArgs {
-		args = append(args, v.(string))
-	}
-
-	path, err := util.ConvertPandoc(dir, args...)
+	path, err := util.ConvertPandoc(dir, request.Args...)
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
+		return apicontract.Failure[apicontract.PandocData](-1, err.Error())
 	}
 
-	ret.Data = map[string]interface{}{
-		"path": path,
-	}
-	return
-}
+	return apicontract.Success(apicontract.PandocData{Path: path})
+})

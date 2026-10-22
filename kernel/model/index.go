@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -18,6 +18,7 @@ package model
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -30,7 +31,6 @@ import (
 	"github.com/88250/go-humanize"
 	"github.com/88250/gulu"
 	"github.com/88250/lute/ast"
-	"github.com/88250/lute/editor"
 	"github.com/88250/lute/html"
 	"github.com/88250/lute/parse"
 	"github.com/panjf2000/ants/v2"
@@ -45,6 +45,12 @@ import (
 	"github.com/siyuan-note/siyuan/kernel/treenode"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
+
+// databaseIndexDataLock 用于避免索引任务读取正在被替换或删除的笔记本目录。
+var databaseIndexDataLock sync.Mutex
+
+const indexBatchDocuments = 32
+const indexBatchBytes int64 = 8 * 1024 * 1024
 
 func UpsertIndexes(paths []string) {
 	var syFiles []string
@@ -128,21 +134,41 @@ func (box *Box) Index() {
 }
 
 func removeBoxRefs(boxID string) {
+	if IsEncryptedBox(boxID) {
+		if err := AcquireEncryptedBoxOperation(boxID); err != nil {
+			return
+		}
+		defer ReleaseEncryptedBoxOperation(boxID)
+	}
 	sql.DeleteBoxRefsQueue(boxID)
 }
 
 func indexBox(boxID string) {
+	encrypted := IsEncryptedBox(boxID)
+	if encrypted {
+		if err := AcquireEncryptedBoxOperation(boxID); err != nil {
+			logging.LogWarnf("skip indexing encrypted notebook [%s]: %s", boxID, err)
+			return
+		}
+		defer ReleaseEncryptedBoxOperation(boxID)
+		if !isEncryptedBoxMounted(boxID) {
+			return
+		}
+	}
+
+	databaseIndexDataLock.Lock()
+	defer databaseIndexDataLock.Unlock()
+
 	box := Conf.Box(boxID)
 	if nil == box {
 		return
 	}
+	// 全量索引使用纯 INSERT，开始前必须清理该笔记本的旧数据，避免重复任务叠加相同行。
+	sql.DeleteBoxQueue(boxID)
 
-	util.SetBootDetails("Listing files...")
+	util.SetBootDetails(Conf.Language(303))
 	files := box.ListFiles("/")
-	boxLen := len(Conf.GetOpenedBoxes())
-	if 1 > boxLen {
-		boxLen = 1
-	}
+	boxLen := max(1, len(Conf.GetOpenedBoxes()))
 	bootProgressPart := int32(30.0 / float64(boxLen) / float64(len(files)))
 
 	start := time.Now()
@@ -152,13 +178,10 @@ func indexBox(boxID string) {
 	lock := sync.Mutex{}
 	util.PushStatusBar(fmt.Sprintf("["+html.EscapeString(box.Name)+"] "+Conf.Language(64), len(files)))
 
-	poolSize := runtime.NumCPU()
-	if 4 < poolSize {
-		poolSize = 4
-	}
+	poolSize := min(runtime.NumCPU(), 4)
 	waitGroup := &sync.WaitGroup{}
 	var avNodes []*ast.Node
-	p, _ := ants.NewPoolWithFunc(poolSize, func(arg interface{}) {
+	p, _ := ants.NewPoolWithFunc(poolSize, func(arg any) {
 		defer waitGroup.Done()
 
 		file := arg.(*FileInfo)
@@ -173,7 +196,7 @@ func indexBox(boxID string) {
 			return
 		}
 
-		docIAL := parse.IAL2MapUnEsc(tree.Root.KramdownIAL)
+		docIAL := parse.IAL2Map(tree.Root.KramdownIAL)
 		if "" == docIAL["updated"] { // 早期的数据可能没有 updated 属性，这里进行订正
 			updated := util.TimeFromID(tree.Root.ID)
 			tree.Root.SetIALAttr("updated", updated)
@@ -184,10 +207,13 @@ func indexBox(boxID string) {
 		}
 
 		lock.Lock()
-		avNodes = append(avNodes, tree.Root.ChildrenByType(ast.NodeAttributeView)...)
+		for _, node := range tree.Root.ChildrenByType(ast.NodeAttributeView) {
+			// 关联镜像只需要节点标识，避免父节点和兄弟节点引用把整篇文档保留到重建结束。
+			avNodes = append(avNodes, &ast.Node{Type: ast.NodeAttributeView, ID: node.ID, AttributeViewID: node.AttributeViewID})
+		}
 		lock.Unlock()
 
-		cache.PutDocIAL(file.path, docIAL)
+		cache.PutDocIALInBox(file.path, tree.Box, docIAL)
 		treenode.IndexBlockTree(tree)
 		sql.IndexTreeQueue(tree)
 		util.IncBootProgress(bootProgressPart, fmt.Sprintf(Conf.Language(92), util.ShortPathForBootingDisplay(tree.Path)))
@@ -195,7 +221,20 @@ func indexBox(boxID string) {
 			util.PushStatusBar(fmt.Sprintf(Conf.Language(88), i, (len(files))-i))
 		}
 	})
+	defer p.Release()
+	var batchDocuments int
+	var batchBytes int64
+	flushBatch := func() {
+		waitGroup.Wait()
+		sql.FlushQueue()
+		batchDocuments, batchBytes = 0, 0
+		debug.FreeOSMemory()
+	}
 	for _, file := range files {
+		if util.IsExiting.Load() {
+			waitGroup.Wait()
+			return
+		}
 		if file.isdir || !strings.HasSuffix(file.name, ".sy") {
 			continue
 		}
@@ -204,16 +243,22 @@ func indexBox(boxID string) {
 			// 不以块 ID 命名的 .sy 文件不应该被加载到思源中 https://github.com/siyuan-note/siyuan/issues/16089
 			continue
 		}
+		// 同时限制文档数量和源文件体积；单篇大文档独立处理，避免与其他文档叠加峰值。
+		if batchDocuments > 0 && (batchDocuments >= indexBatchDocuments || batchBytes+file.size > indexBatchBytes) {
+			flushBatch()
+		}
 
 		waitGroup.Add(1)
 		invokeErr := p.Invoke(file)
 		if nil != invokeErr {
+			waitGroup.Done()
 			logging.LogErrorf("invoke [%s] failed: %s", file.path, invokeErr)
 			continue
 		}
+		batchDocuments++
+		batchBytes += file.size
 	}
-	waitGroup.Wait()
-	p.Release()
+	flushBatch()
 
 	// 关联数据库和块
 	av.BatchUpsertBlockRel(avNodes)
@@ -223,37 +268,65 @@ func indexBox(boxID string) {
 	elapsed := end.Sub(start).Seconds()
 	logging.LogInfof("rebuilt database for notebook [%s] in [%.2fs], tree [count=%d, size=%s]", box.ID, elapsed, treeCount, humanize.BytesCustomCeil(uint64(treeSize), 2))
 	debug.FreeOSMemory()
-	return
 }
 
 func IndexRefs() {
+	boxes := Conf.GetOpenedBoxes()
+	boxIDs := make([]string, 0, len(boxes))
+	for _, box := range boxes {
+		boxIDs = append(boxIDs, box.ID)
+	}
+	release, err := AcquireEncryptedBoxOperations(context.Background(), boxIDs)
+	if err != nil {
+		logging.LogWarnf("skip resolving references while an encrypted notebook is unavailable: %s", err)
+		return
+	}
+	defer release()
+
+	databaseIndexDataLock.Lock()
+	defer databaseIndexDataLock.Unlock()
+
 	start := time.Now()
-	util.SetBootDetails("Resolving refs...")
+	util.SetBootDetails(Conf.Language(304))
 	util.PushStatusBar(Conf.Language(54))
-	util.SetBootDetails("Indexing refs...")
+	util.SetBootDetails(Conf.Language(305))
 
 	var defBlockIDs []string
+	defBlockBoxes := map[string]string{} // defBlockID -> boxID，加密笔记本下需按 box 路由后续加载
 	luteEngine := util.NewLute()
-	boxes := Conf.GetOpenedBoxes()
 	for _, box := range boxes {
+		encryptedBox := IsEncryptedBox(box.ID)
 		pages := pagedPaths(filepath.Join(util.DataDir, box.ID), 32)
 		for _, paths := range pages {
 			for _, treeAbsPath := range paths {
-				data, readErr := filelock.ReadFile(treeAbsPath)
-				if nil != readErr {
-					logging.LogWarnf("get data [path=%s] failed: %s", treeAbsPath, readErr)
-					continue
-				}
-
-				if !bytes.Contains(data, []byte("TextMarkBlockRefID")) && !bytes.Contains(data, []byte("TextMarkFileAnnotationRefID")) {
-					continue
-				}
-
 				p := filepath.ToSlash(strings.TrimPrefix(treeAbsPath, filepath.Join(util.DataDir, box.ID)))
-				tree, parseErr := filesys.LoadTreeByData(data, box.ID, p, luteEngine)
-				if nil != parseErr {
-					logging.LogWarnf("parse json to tree [%s] failed: %s", treeAbsPath, parseErr)
-					continue
+
+				// 加密笔记本的 .sy 是密文，必须走 filesys.LoadTree 透明解密；无法用 bytes.Contains 预检
+				var tree *parse.Tree
+				if encryptedBox {
+					loadTree, loadErr := filesys.LoadTree(box.ID, p, luteEngine)
+					if nil != loadErr {
+						logging.LogWarnf("load encrypted box [%s] tree [%s] failed: %s", box.ID, treeAbsPath, loadErr)
+						continue
+					}
+					tree = loadTree
+				} else {
+					data, readErr := filelock.ReadFile(treeAbsPath)
+					if nil != readErr {
+						logging.LogWarnf("get data [path=%s] failed: %s", treeAbsPath, readErr)
+						continue
+					}
+
+					if !bytes.Contains(data, []byte("TextMarkBlockRefID")) && !bytes.Contains(data, []byte("TextMarkFileAnnotationRefID")) {
+						continue
+					}
+
+					parseTree, parseErr := filesys.LoadTreeByData(data, box.ID, p, luteEngine)
+					if nil != parseErr {
+						logging.LogWarnf("parse json to tree [%s] failed: %s", treeAbsPath, parseErr)
+						continue
+					}
+					tree = parseTree
 				}
 
 				ast.Walk(tree.Root, func(n *ast.Node, entering bool) ast.WalkStatus {
@@ -263,6 +336,7 @@ func IndexRefs() {
 
 					if treenode.IsBlockRef(n) || treenode.IsFileAnnotationRef(n) {
 						defBlockIDs = append(defBlockIDs, tree.Root.ID)
+						defBlockBoxes[tree.Root.ID] = box.ID
 					}
 					return ast.WalkContinue
 				})
@@ -278,12 +352,19 @@ func IndexRefs() {
 		bootProgressPart := int32(10.0 / float64(size))
 
 		for _, defBlockID := range defBlockIDs {
-			defTree, loadErr := LoadTreeByBlockID(defBlockID)
+			// 加密笔记本的 defBlock 在加密 blocktree db，需按 box 路由加载
+			var defTree *parse.Tree
+			var loadErr error
+			if boxID, ok := defBlockBoxes[defBlockID]; ok && IsEncryptedBox(boxID) {
+				defTree, loadErr = loadTreeByBlockIDInBox(defBlockID, boxID)
+			} else {
+				defTree, loadErr = LoadTreeByBlockID(defBlockID)
+			}
 			if nil != loadErr {
 				continue
 			}
 
-			util.IncBootProgress(bootProgressPart, "Indexing ref "+defTree.ID)
+			util.IncBootProgress(bootProgressPart, fmt.Sprintf(Conf.Language(306), defTree.ID))
 			sql.UpdateRefsTreeQueue(defTree)
 			if 1 < i && 0 == i%64 {
 				util.PushStatusBar(fmt.Sprintf(Conf.Language(55), i))
@@ -291,7 +372,7 @@ func IndexRefs() {
 			i++
 		}
 	}
-	logging.LogInfof("resolved refs [%d] in [%dms]", size, time.Now().Sub(start).Milliseconds())
+	logging.LogInfof("resolved refs [%d] in [%dms]", size, time.Since(start).Milliseconds())
 	util.PushStatusBar(fmt.Sprintf(Conf.Language(55), i))
 }
 
@@ -307,34 +388,15 @@ func autoIndexEmbedBlock() {
 	defer indexEmbedBlockLock.Unlock()
 
 	embedBlocks := sql.QueryEmptyContentEmbedBlocks()
+	for _, boxID := range treenode.GetOpenedEncryptedBoxIDs() {
+		embedBlocks = append(embedBlocks, sql.QueryEmptyContentEmbedBlocksInBox(boxID)...)
+	}
 	for i, embedBlock := range embedBlocks {
-		markdown := strings.TrimSpace(embedBlock.Markdown)
-		markdown = strings.TrimPrefix(markdown, "{{")
-		stmt := strings.TrimSuffix(markdown, "}}")
-
-		// 嵌入块的 Markdown 内容需要反转义
-		stmt = html.UnescapeString(stmt)
-		stmt = strings.ReplaceAll(stmt, editor.IALValEscNewLine, "\n")
-
-		// 需要移除首尾的空白字符以判断是否具有 //!js 标记
-		stmt = strings.TrimSpace(stmt)
-		if strings.HasPrefix(stmt, "//!js") {
-			// https://github.com/siyuan-note/siyuan/issues/9648
-			// js 嵌入块不支持自动索引，由前端主动调用 /api/search/updateEmbedBlock 接口更新内容 https://github.com/siyuan-note/siyuan/issues/9736
+		content, supported := sql.CalculateEmbedBlockContent(embedBlock)
+		if !supported {
 			continue
 		}
-
-		if !strings.Contains(strings.ToLower(stmt), "select") {
-			continue
-		}
-
-		queryResultBlocks := sql.SelectBlocksRawStmtNoParse(stmt, 102400)
-		for _, block := range queryResultBlocks {
-			embedBlock.Content += block.Content
-		}
-		if "" == embedBlock.Content {
-			embedBlock.Content = "no query result"
-		}
+		embedBlock.Content = content
 		sql.UpdateBlockContentQueue(embedBlock)
 
 		if 63 <= i { // 一次任务中最多处理 64 个嵌入块，防止卡顿
@@ -343,19 +405,27 @@ func autoIndexEmbedBlock() {
 	}
 }
 
-func updateEmbedBlockContent(embedBlockID string, queryResultBlocks []*EmbedBlock) {
-	embedBlock := sql.GetBlock(embedBlockID)
+func updateEmbedBlockContent(embedBlockID string, queryResultBlocks []*EmbedBlock, boxIDs ...string) {
+	boxID := ""
+	if len(boxIDs) > 0 {
+		boxID = boxIDs[0]
+	}
+	embedBlock := sql.GetBlockInBox(embedBlockID, boxID)
 	if nil == embedBlock {
 		return
 	}
 
-	embedBlock.Content = "" // 嵌入块每查询一次多一个结果 https://github.com/siyuan-note/siyuan/issues/7196
+	content := "" // 嵌入块每查询一次多一个结果 https://github.com/siyuan-note/siyuan/issues/7196
 	for _, block := range queryResultBlocks {
-		embedBlock.Content += block.Block.Markdown
+		content += block.Block.Markdown
 	}
-	if "" == embedBlock.Content {
-		embedBlock.Content = "no query result"
+	if "" == content {
+		content = "no query result"
 	}
+	if embedBlock.Content == content {
+		return
+	}
+	embedBlock.Content = content
 	sql.UpdateBlockContentQueue(embedBlock)
 }
 
@@ -370,39 +440,51 @@ var (
 
 func subscribeSQLEvents() {
 	// 使用下面的 EvtSQLInsertBlocksFTS 就可以了
-	//eventbus.Subscribe(eventbus.EvtSQLInsertBlocks, func(context map[string]interface{}, current, total, blockCount int, hash string) {
+	//eventbus.Subscribe(eventbus.EvtSQLInsertBlocks, func(context map[string]any, current, total, blockCount int, hash string) {
 	//
 	//	msg := fmt.Sprintf(Conf.Language(89), current, total, blockCount, hash)
 	//	util.SetBootDetails(msg)
 	//	util.ContextPushMsg(context, msg)
 	//})
-	eventbus.Subscribe(eventbus.EvtSQLInsertBlocksFTS, func(context map[string]interface{}, blockCount int, hash string) {
+	eventbus.Subscribe(eventbus.EvtSQLInsertBlocksFTS, func(context map[string]any, blockCount int, hash string) {
 		if !pushSQLInsertBlocksFTSMsg {
 			return
 		}
 
+		if nil == context["current"] || nil == context["total"] {
+			logging.LogWarnf("EvtSQLInsertBlocksFTS handler missing key [current] or [total] in context")
+			return
+		}
 		current := context["current"].(int)
 		total := context["total"]
 		msg := fmt.Sprintf(Conf.Language(90), current, total, blockCount, hash)
 		util.SetBootDetails(msg)
 		util.ContextPushMsg(context, msg)
 	})
-	eventbus.Subscribe(eventbus.EvtSQLDeleteBlocks, func(context map[string]interface{}, rootID string) {
+	eventbus.Subscribe(eventbus.EvtSQLDeleteBlocks, func(context map[string]any, rootID string) {
 		if !pushSQLDeleteBlocksMsg {
 			return
 		}
 
+		if nil == context["current"] || nil == context["total"] {
+			logging.LogWarnf("EvtSQLDeleteBlocks handler missing key [current] or [total] in context")
+			return
+		}
 		current := context["current"].(int)
 		total := context["total"]
 		msg := fmt.Sprintf(Conf.Language(93), current, total, rootID)
 		util.SetBootDetails(msg)
 		util.ContextPushMsg(context, msg)
 	})
-	eventbus.Subscribe(eventbus.EvtSQLUpdateBlocksHPaths, func(context map[string]interface{}, blockCount int, hash string) {
-		if util.ContainerAndroid == util.Container || util.ContainerIOS == util.Container || util.ContainerHarmony == util.Container {
+	eventbus.Subscribe(eventbus.EvtSQLUpdateBlocksHPaths, func(context map[string]any, blockCount int, hash string) {
+		if util.IsMobileContainer() {
 			return
 		}
 
+		if nil == context["current"] || nil == context["total"] {
+			logging.LogWarnf("EvtSQLUpdateBlocksHPaths handler missing key [current] or [total] in context")
+			return
+		}
 		current := context["current"].(int)
 		total := context["total"]
 		msg := fmt.Sprintf(Conf.Language(234), current, total, blockCount, hash)
@@ -410,11 +492,15 @@ func subscribeSQLEvents() {
 		util.ContextPushMsg(context, msg)
 	})
 
-	eventbus.Subscribe(eventbus.EvtSQLInsertHistory, func(context map[string]interface{}) {
-		if util.ContainerAndroid == util.Container || util.ContainerIOS == util.Container || util.ContainerHarmony == util.Container {
+	eventbus.Subscribe(eventbus.EvtSQLInsertHistory, func(context map[string]any) {
+		if util.IsMobileContainer() {
 			return
 		}
 
+		if nil == context["current"] || nil == context["total"] {
+			logging.LogWarnf("EvtSQLInsertHistory handler missing key [current] or [total] in context")
+			return
+		}
 		current := context["current"].(int)
 		total := context["total"]
 		msg := fmt.Sprintf(Conf.Language(191), current, total)
@@ -422,11 +508,15 @@ func subscribeSQLEvents() {
 		util.ContextPushMsg(context, msg)
 	})
 
-	eventbus.Subscribe(eventbus.EvtSQLInsertAssetContent, func(context map[string]interface{}) {
-		if util.ContainerAndroid == util.Container || util.ContainerIOS == util.Container || util.ContainerHarmony == util.Container {
+	eventbus.Subscribe(eventbus.EvtSQLInsertAssetContent, func(context map[string]any) {
+		if util.IsMobileContainer() {
 			return
 		}
 
+		if nil == context["current"] || nil == context["total"] {
+			logging.LogWarnf("EvtSQLInsertAssetContent handler missing key [current] or [total] in context")
+			return
+		}
 		current := context["current"].(int)
 		total := context["total"]
 		msg := fmt.Sprintf(Conf.Language(217), current, total)
@@ -434,13 +524,16 @@ func subscribeSQLEvents() {
 		util.ContextPushMsg(context, msg)
 	})
 
+	// 持久化索引队列负责崩溃恢复，状态事件只更新供查询使用的运行时标志。
 	eventbus.Subscribe(eventbus.EvtSQLIndexChanged, func() {
+		Conf.m.Lock()
 		Conf.DataIndexState = 1
-		Conf.Save()
+		Conf.m.Unlock()
 	})
 
 	eventbus.Subscribe(eventbus.EvtSQLIndexFlushed, func() {
+		Conf.m.Lock()
 		Conf.DataIndexState = 0
-		Conf.Save()
+		Conf.m.Unlock()
 	})
 }

@@ -7,19 +7,29 @@ Please provide a summary of the change and the issue being fixed. Include releva
 
 ## Type of change / 变更类型
 
+<!--
+A PR should have a single purpose. Please do not include multiple changes such as bug fixes, refactoring, or new features in one PR; otherwise, the PR will be rejected.
+一个 PR 应该只包含一个目的，请勿将缺陷修复、代码重构或新功能等多个变更包含在同一个 PR 中，否则 PR 将被拒绝。
+-->
+
 - [ ] Bug fix
       缺陷修复
+- [ ] Refactoring
+      代码重构
 - [ ] New feature
-      新功能  
+      新功能
 - [ ] Text updates or new language additions
       修改文案或增加新语言
 
 <!--
-If you want to contribute a feature or bug fix, please submit an issue first. After full community discussion, we will decide whether to implement the change. Do not submit code directly, otherwise it may be rejected.
-如果你想贡献一个特性或者缺陷修复，请先提交一个 issue。在社区充分讨论后，我们会决定是否进行变更。不要直接提交贡献代码，否则可能会被拒绝。
+If you want to contribute a feature, or refactoring, or bug fix, please submit an issue first. After sufficient discussion in the community, we will decide whether to make the change. Do not submit contribution code directly, otherwise it may be rejected.
+如果你想贡献一个特性、重构或者缺陷修复，请先提交一个 issue。在社区充分讨论后，我们会决定是否进行变更。不要直接提交贡献代码，否则可能会被拒绝。
 
 If your contribution involves text updates or adding new languages, please submit directly, and we will evaluate.
 如果你的贡献涉及文案修改或增加新语言，请直接提交，我们会进行评估。
+
+PRs that only add AI provider presets are currently not accepted. Please use the custom OpenAI-compatible provider settings instead.
+目前暂不接受仅新增 AI 服务商预设的 PR，请使用自定义 OpenAI 兼容服务商设置。
 -->
 
 ## Checklist / 检查清单

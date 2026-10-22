@@ -5,16 +5,17 @@
   padding: 4px 8px;
   font-size: 12px;
   font-weight: normal;
-  -webkit-font-smoothing: subpixel-antialiased;
   color: var(--b3-tooltips-color);
   word-wrap: break-word;
   background-color: var(--b3-tooltips-background);
   border-radius: var(--b3-border-radius);
   line-height: 17px;
+  width: max-content;
   max-width: 320px;
-  animation-duration: 150ms;
-  animation-fill-mode: both;
   animation-name: zoomIn;
+  animation-duration: 150ms;
+  animation-delay: 300ms;
+  animation-fill-mode: both;
   max-height: 90vh;
   overflow: auto;
   box-sizing: border-box;
@@ -37,6 +38,34 @@
   }
 }
 
+.drag-tip {
+  max-width: min(216px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+
+  &__title,
+  &__target {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__action {
+    color: var(--b3-tooltips-second-color);
+    font-size: 12px;
+
+    &--target {
+      display: grid;
+      grid-template-columns: minmax(0, max-content) minmax(0, 1fr) minmax(0, max-content);
+    }
+  }
+
+  &__label {
+    color: var(--b3-tooltips-color);
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+}
+
 .b3-tooltips {
   position: relative;
   cursor: pointer;
@@ -47,7 +76,6 @@
     padding: 4px 8px;
     font-size: 12px;
     font-weight: normal;
-    -webkit-font-smoothing: subpixel-antialiased;
     color: var(--b3-tooltips-color);
     word-wrap: break-word;
     white-space: pre;
@@ -55,7 +83,7 @@
     background-color: var(--b3-tooltips-background);
     border-radius: var(--b3-border-radius);
     line-height: 17px;
-    transform: scale(.8);
+    transform: scale(.9);
     max-width: 60vw;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -64,21 +92,11 @@
     font-family: var(--b3-font-family);
   }
 
-  &::before {
-    z-index: 1000001;
-    width: 0;
-    height: 0;
-    content: "";
-    border: 5px solid transparent;
-    transform: scale(1.54);
-  }
-
-  &::after,
-  &::before {
+  &::after {
     pointer-events: none;
     position: absolute;
     opacity: 0;
-    transition: opacity 150ms 0ms cubic-bezier(0, 0, .2, 1), transform 150ms 0ms cubic-bezier(0, 0, .2, 1);
+    transition: opacity 150ms 300ms cubic-bezier(0, 0, .2, 1), transform 150ms 300ms cubic-bezier(0, 0, .2, 1);
   }
 
   &:hover,
@@ -86,8 +104,8 @@
     overflow: initial;
   }
 
-  &:hover::before,
-  &:hover::after {
+  &:hover::after,
+  &:focus-within::after {
     display: inline-block;
     opacity: 1;
     transform: scale(1);
@@ -99,16 +117,6 @@
     top: 100%;
     right: 50%;
     margin-top: 5px
-  }
-
-  &__s::before,
-  &__se::before,
-  &__sw::before {
-    top: auto;
-    right: 50%;
-    bottom: -5px;
-    margin-right: -5px;
-    border-bottom-color: var(--b3-tooltips-background)
   }
 
   &__se::after {
@@ -129,16 +137,6 @@
     margin-bottom: 5px
   }
 
-  &__n::before,
-  &__ne::before,
-  &__nw::before {
-    top: -5px;
-    right: 50%;
-    bottom: auto;
-    margin-right: -5px;
-    border-top-color: var(--b3-tooltips-background)
-  }
-
   &__ne::after {
     right: auto;
     left: 50%;
@@ -155,7 +153,9 @@
   }
 
   &__s:hover::after,
-  &__n:hover::after {
+  &__n:hover::after,
+  &__s:focus-within::after,
+  &__n:focus-within::after {
     transform: translateX(50%) scale(1);
   }
 
@@ -166,14 +166,6 @@
     transform: translateY(50%) scale(.8);
   }
 
-  &__w::before {
-    top: 50%;
-    bottom: 50%;
-    left: -5px;
-    margin-top: -5px;
-    border-left-color: var(--b3-tooltips-background);
-  }
-
   &__e::after {
     bottom: 50%;
     left: 100%;
@@ -182,22 +174,24 @@
   }
 
   &__e:hover::after,
-  &__w:hover::after {
+  &__w:hover::after,
+  &__e:focus-within::after,
+  &__w:focus-within::after {
     transform: translateY(50%) scale(1);
   }
+}
 
+.body--touch-input {
+  .tooltip--hover {
+    display: none;
+  }
 
-  &__e::before {
-    top: 50%;
-    right: -5px;
-    bottom: 50%;
-    margin-top: -5px;
-    border-right-color: var(--b3-tooltips-background);
+  .b3-tooltips::after {
+    content: none;
   }
 }
 
 @media screen and (max-width: 520px) {
-  .b3-tooltips::before,
   .b3-tooltips::after {
     content: none;
   }

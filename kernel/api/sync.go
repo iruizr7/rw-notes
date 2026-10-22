@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -19,46 +19,45 @@ package api
 import (
 	"encoding/hex"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/siyuan-note/dejavu/cloud"
 	"github.com/siyuan-note/logging"
 
 	"github.com/88250/gulu"
 	"github.com/gin-gonic/gin"
+	"github.com/siyuan-note/siyuan/kernel/apicontract"
 	"github.com/siyuan-note/siyuan/kernel/conf"
 	"github.com/siyuan-note/siyuan/kernel/model"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
 
-func importSyncProviderWebDAV(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(200, ret)
+var importSyncProviderWebDAV = contractHandler(apicontract.ImportSyncProviderWebDAV, importSyncProviderWebDAVContract, prepareSyncProviderImport[apicontract.SyncWebDAVData])
 
+func prepareSyncProviderImport[Data any](c *gin.Context) *apicontract.Response[Data] {
 	form, err := c.MultipartForm()
 	if err != nil {
 		logging.LogErrorf("read upload file failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
+		response := apicontract.Failure[Data](-1, err.Error())
+		return &response
 	}
-
-	files := form.File["file"]
-	if 1 != len(files) {
-		ret.Code = -1
-		ret.Msg = "invalid upload file"
-		return
+	if len(form.File["file"]) != 1 {
+		response := apicontract.Failure[Data](-1, "invalid upload file")
+		return &response
 	}
+	return nil
+}
 
-	f := files[0]
+func importSyncProviderWebDAVContract(c *gin.Context, request apicontract.SyncProviderImportRequest) (ret apicontract.Response[apicontract.SyncWebDAVData]) {
+
+	f := request.File
 	fh, err := f.Open()
 	if err != nil {
 		logging.LogErrorf("read upload file failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncWebDAVData](-1, err.Error())
 		return
 	}
 
@@ -66,70 +65,68 @@ func importSyncProviderWebDAV(c *gin.Context) {
 	fh.Close()
 	if err != nil {
 		logging.LogErrorf("read upload file failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncWebDAVData](-1, err.Error())
 		return
 	}
 
 	importDir := filepath.Join(util.TempDir, "import")
 	if err = os.MkdirAll(importDir, 0755); err != nil {
 		logging.LogErrorf("import WebDAV provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncWebDAVData](-1, err.Error())
 		return
 	}
 
-	tmp := filepath.Join(importDir, f.Filename)
-	if err = os.WriteFile(tmp, data, 0644); err != nil {
+	writePath := filepath.Join(importDir, f.Filename)
+	if !gulu.File.IsSubPath(importDir, writePath) {
+		logging.LogErrorf("import path [%s] is not sub path of import dir [%s]", writePath, importDir)
+		ret = apicontract.Failure[apicontract.SyncWebDAVData](-1, "import path is not sub path of import dir")
+		return
+	}
+
+	if err = os.WriteFile(writePath, data, 0644); err != nil {
 		logging.LogErrorf("import WebDAV provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncWebDAVData](-1, err.Error())
 		return
 	}
 
 	tmpDir := filepath.Join(importDir, "webdav")
 	os.RemoveAll(tmpDir)
-	if strings.HasSuffix(strings.ToLower(tmp), ".zip") {
-		if err = gulu.Zip.Unzip(tmp, tmpDir); err != nil {
+	var copyError error
+	if strings.HasSuffix(strings.ToLower(writePath), ".zip") {
+		if err = gulu.Zip.Unzip(writePath, tmpDir); err != nil {
 			logging.LogErrorf("import WebDAV provider failed: %s", err)
-			ret.Code = -1
-			ret.Msg = err.Error()
+			ret = apicontract.Failure[apicontract.SyncWebDAVData](-1, err.Error())
 			return
 		}
-	} else if strings.HasSuffix(strings.ToLower(tmp), ".json") {
-		if err = gulu.File.CopyFile(tmp, filepath.Join(tmpDir, f.Filename)); err != nil {
+	} else if strings.HasSuffix(strings.ToLower(writePath), ".json") {
+		if err = gulu.File.CopyFile(writePath, filepath.Join(tmpDir, f.Filename)); err != nil {
 			logging.LogErrorf("import WebDAV provider failed: %s", err)
-			ret.Code = -1
-			ret.Msg = err.Error()
+			copyError = err
 		}
 	} else {
 		logging.LogErrorf("invalid WebDAV provider package")
-		ret.Code = -1
-		ret.Msg = "invalid WebDAV provider package"
+		ret = apicontract.Failure[apicontract.SyncWebDAVData](-1, "invalid WebDAV provider package")
 		return
 	}
 
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
 		logging.LogErrorf("import WebDAV provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncWebDAVData](-1, err.Error())
 		return
 	}
 
 	if 1 != len(entries) {
 		logging.LogErrorf("invalid WebDAV provider package")
-		ret.Code = -1
-		ret.Msg = "invalid WebDAV provider package"
+		ret = apicontract.Failure[apicontract.SyncWebDAVData](-1, "invalid WebDAV provider package")
 		return
 	}
 
-	tmp = filepath.Join(tmpDir, entries[0].Name())
-	data, err = os.ReadFile(tmp)
+	writePath = filepath.Join(tmpDir, entries[0].Name())
+	data, err = os.ReadFile(writePath)
 	if err != nil {
 		logging.LogErrorf("import WebDAV provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncWebDAVData](-1, err.Error())
 		return
 	}
 
@@ -138,47 +135,47 @@ func importSyncProviderWebDAV(c *gin.Context) {
 	webdav := &conf.WebDAV{}
 	if err = gulu.JSON.UnmarshalJSON(data, webdav); err != nil {
 		logging.LogErrorf("import WebDAV provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncWebDAVData](-1, err.Error())
 		return
 	}
 
 	err = model.SetSyncProviderWebDAV(webdav)
 	if err != nil {
 		logging.LogErrorf("import WebDAV provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncWebDAVData](-1, err.Error())
 		return
 	}
 
-	ret.Data = map[string]interface{}{
-		"webdav": model.Conf.Sync.WebDAV,
+	result := apicontract.SyncWebDAVData{WebDAV: (*apicontract.SyncWebDAV)(model.Conf.Sync.Load().WebDAV)}
+	if copyError != nil {
+		return apicontract.ImportSyncProviderWebDAV.FailureWithData(-1, copyError.Error(), result)
 	}
+	ret = apicontract.Success(result)
+	return
 }
 
-func exportSyncProviderWebDAV(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var exportSyncProviderWebDAV = contractHandler(apicontract.ExportSyncProviderWebDAV, exportSyncProviderWebDAVContract)
+
+func exportSyncProviderWebDAVContract(c *gin.Context, request apicontract.EmptyRequest) (ret apicontract.Response[apicontract.SyncProviderExportData]) {
+	confSyncSnapshot := model.Conf.LoadSync()
 
 	name := "siyuan-webdav-" + time.Now().Format("20060102150405") + ".json"
 	tmpDir := filepath.Join(util.TempDir, "export")
 	if err := os.MkdirAll(tmpDir, 0755); err != nil {
 		logging.LogErrorf("export WebDAV provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncProviderExportData](-1, err.Error())
 		return
 	}
 
-	webdav := model.Conf.Sync.WebDAV
+	webdav := confSyncSnapshot.WebDAV
 	if nil == webdav {
 		webdav = &conf.WebDAV{}
 	}
 
-	data, err := gulu.JSON.MarshalJSON(model.Conf.Sync.WebDAV)
+	data, err := gulu.JSON.MarshalJSON(confSyncSnapshot.WebDAV)
 	if err != nil {
 		logging.LogErrorf("export WebDAV provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncProviderExportData](-1, err.Error())
 		return
 	}
 
@@ -186,65 +183,43 @@ func exportSyncProviderWebDAV(c *gin.Context) {
 	tmp := filepath.Join(tmpDir, name)
 	if err = os.WriteFile(tmp, []byte(dataStr), 0644); err != nil {
 		logging.LogErrorf("export WebDAV provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncProviderExportData](-1, err.Error())
 		return
 	}
 
 	zipFile, err := gulu.Zip.Create(tmp + ".zip")
 	if err != nil {
 		logging.LogErrorf("export WebDAV provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncProviderExportData](-1, err.Error())
 		return
 	}
 
 	if err = zipFile.AddEntry(name, tmp); err != nil {
 		logging.LogErrorf("export WebDAV provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncProviderExportData](-1, err.Error())
 		return
 	}
 
 	if err = zipFile.Close(); err != nil {
 		logging.LogErrorf("export WebDAV provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncProviderExportData](-1, err.Error())
 		return
 	}
 
 	zipPath := "/export/" + name + ".zip"
-	ret.Data = map[string]interface{}{
-		"name": name,
-		"zip":  zipPath,
-	}
+	ret = apicontract.Success(apicontract.SyncProviderExportData{Name: name, Zip: zipPath})
+	return
 }
 
-func importSyncProviderS3(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(200, ret)
+var importSyncProviderS3 = contractHandler(apicontract.ImportSyncProviderS3, importSyncProviderS3Contract, prepareSyncProviderImport[apicontract.SyncS3Data])
 
-	form, err := c.MultipartForm()
-	if err != nil {
-		logging.LogErrorf("read upload file failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
-	}
+func importSyncProviderS3Contract(c *gin.Context, request apicontract.SyncProviderImportRequest) (ret apicontract.Response[apicontract.SyncS3Data]) {
 
-	files := form.File["file"]
-	if 1 != len(files) {
-		ret.Code = -1
-		ret.Msg = "invalid upload file"
-		return
-	}
-
-	f := files[0]
+	f := request.File
 	fh, err := f.Open()
 	if err != nil {
 		logging.LogErrorf("read upload file failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncS3Data](-1, err.Error())
 		return
 	}
 
@@ -252,70 +227,68 @@ func importSyncProviderS3(c *gin.Context) {
 	fh.Close()
 	if err != nil {
 		logging.LogErrorf("read upload file failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncS3Data](-1, err.Error())
 		return
 	}
 
 	importDir := filepath.Join(util.TempDir, "import")
 	if err = os.MkdirAll(importDir, 0755); err != nil {
 		logging.LogErrorf("import S3 provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncS3Data](-1, err.Error())
 		return
 	}
 
-	tmp := filepath.Join(importDir, f.Filename)
-	if err = os.WriteFile(tmp, data, 0644); err != nil {
+	writePath := filepath.Join(importDir, f.Filename)
+	if !gulu.File.IsSubPath(importDir, writePath) {
+		logging.LogErrorf("import path [%s] is not sub path of import dir [%s]", writePath, importDir)
+		ret = apicontract.Failure[apicontract.SyncS3Data](-1, "import path is not sub path of import dir")
+		return
+	}
+
+	if err = os.WriteFile(writePath, data, 0644); err != nil {
 		logging.LogErrorf("import S3 provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncS3Data](-1, err.Error())
 		return
 	}
 
 	tmpDir := filepath.Join(importDir, "s3")
 	os.RemoveAll(tmpDir)
-	if strings.HasSuffix(strings.ToLower(tmp), ".zip") {
-		if err = gulu.Zip.Unzip(tmp, tmpDir); err != nil {
+	var copyError error
+	if strings.HasSuffix(strings.ToLower(writePath), ".zip") {
+		if err = gulu.Zip.Unzip(writePath, tmpDir); err != nil {
 			logging.LogErrorf("import S3 provider failed: %s", err)
-			ret.Code = -1
-			ret.Msg = err.Error()
+			ret = apicontract.Failure[apicontract.SyncS3Data](-1, err.Error())
 			return
 		}
-	} else if strings.HasSuffix(strings.ToLower(tmp), ".json") {
-		if err = gulu.File.CopyFile(tmp, filepath.Join(tmpDir, f.Filename)); err != nil {
+	} else if strings.HasSuffix(strings.ToLower(writePath), ".json") {
+		if err = gulu.File.CopyFile(writePath, filepath.Join(tmpDir, f.Filename)); err != nil {
 			logging.LogErrorf("import S3 provider failed: %s", err)
-			ret.Code = -1
-			ret.Msg = err.Error()
+			copyError = err
 		}
 	} else {
 		logging.LogErrorf("invalid S3 provider package")
-		ret.Code = -1
-		ret.Msg = "invalid S3 provider package"
+		ret = apicontract.Failure[apicontract.SyncS3Data](-1, "invalid S3 provider package")
 		return
 	}
 
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
 		logging.LogErrorf("import S3 provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncS3Data](-1, err.Error())
 		return
 	}
 
 	if 1 != len(entries) {
 		logging.LogErrorf("invalid S3 provider package")
-		ret.Code = -1
-		ret.Msg = "invalid S3 provider package"
+		ret = apicontract.Failure[apicontract.SyncS3Data](-1, "invalid S3 provider package")
 		return
 	}
 
-	tmp = filepath.Join(tmpDir, entries[0].Name())
-	data, err = os.ReadFile(tmp)
+	writePath = filepath.Join(tmpDir, entries[0].Name())
+	data, err = os.ReadFile(writePath)
 	if err != nil {
 		logging.LogErrorf("import S3 provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncS3Data](-1, err.Error())
 		return
 	}
 
@@ -324,47 +297,47 @@ func importSyncProviderS3(c *gin.Context) {
 	s3 := &conf.S3{}
 	if err = gulu.JSON.UnmarshalJSON(data, s3); err != nil {
 		logging.LogErrorf("import S3 provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncS3Data](-1, err.Error())
 		return
 	}
 
 	err = model.SetSyncProviderS3(s3)
 	if err != nil {
 		logging.LogErrorf("import S3 provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncS3Data](-1, err.Error())
 		return
 	}
 
-	ret.Data = map[string]interface{}{
-		"s3": model.Conf.Sync.S3,
+	result := apicontract.SyncS3Data{S3: (*apicontract.SyncS3)(model.Conf.Sync.Load().S3)}
+	if copyError != nil {
+		return apicontract.ImportSyncProviderS3.FailureWithData(-1, copyError.Error(), result)
 	}
+	ret = apicontract.Success(result)
+	return
 }
 
-func exportSyncProviderS3(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var exportSyncProviderS3 = contractHandler(apicontract.ExportSyncProviderS3, exportSyncProviderS3Contract)
+
+func exportSyncProviderS3Contract(c *gin.Context, request apicontract.EmptyRequest) (ret apicontract.Response[apicontract.SyncProviderExportData]) {
+	confSyncSnapshot := model.Conf.LoadSync()
 
 	name := "siyuan-s3-" + time.Now().Format("20060102150405") + ".json"
 	tmpDir := filepath.Join(util.TempDir, "export")
 	if err := os.MkdirAll(tmpDir, 0755); err != nil {
 		logging.LogErrorf("export S3 provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncProviderExportData](-1, err.Error())
 		return
 	}
 
-	s3 := model.Conf.Sync.S3
+	s3 := confSyncSnapshot.S3
 	if nil == s3 {
 		s3 = &conf.S3{}
 	}
 
-	data, err := gulu.JSON.MarshalJSON(model.Conf.Sync.S3)
+	data, err := gulu.JSON.MarshalJSON(confSyncSnapshot.S3)
 	if err != nil {
 		logging.LogErrorf("export S3 provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncProviderExportData](-1, err.Error())
 		return
 	}
 
@@ -372,378 +345,362 @@ func exportSyncProviderS3(c *gin.Context) {
 	tmp := filepath.Join(tmpDir, name)
 	if err = os.WriteFile(tmp, []byte(dataStr), 0644); err != nil {
 		logging.LogErrorf("export S3 provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncProviderExportData](-1, err.Error())
 		return
 	}
 
 	zipFile, err := gulu.Zip.Create(tmp + ".zip")
 	if err != nil {
 		logging.LogErrorf("export S3 provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncProviderExportData](-1, err.Error())
 		return
 	}
 
 	if err = zipFile.AddEntry(name, tmp); err != nil {
 		logging.LogErrorf("export S3 provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncProviderExportData](-1, err.Error())
 		return
 	}
 
 	if err = zipFile.Close(); err != nil {
 		logging.LogErrorf("export S3 provider failed: %s", err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.SyncProviderExportData](-1, err.Error())
 		return
 	}
 
 	zipPath := "/export/" + name + ".zip"
-	ret.Data = map[string]interface{}{
-		"name": name,
-		"zip":  zipPath,
-	}
+	ret = apicontract.Success(apicontract.SyncProviderExportData{Name: name, Zip: zipPath})
+	return
 }
 
-func getSyncInfo(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var getSyncInfo = contractHandler(apicontract.GetSyncInfo, getSyncInfoContract)
 
-	stat := model.Conf.Sync.Stat
-	if !model.Conf.Sync.Enabled {
+func getSyncInfoContract(c *gin.Context, request apicontract.EmptyRequest) (ret apicontract.Response[apicontract.SyncInfoData]) {
+	confSyncSnapshot := model.Conf.LoadSync()
+
+	stat := confSyncSnapshot.Stat
+	if !confSyncSnapshot.Enabled {
 		stat = model.Conf.Language(53)
 	}
 
-	ret.Data = map[string]interface{}{
-		"synced":  model.Conf.Sync.Synced,
-		"stat":    stat,
-		"kernels": model.GetOnlineKernels(),
-		"kernel":  model.KernelID,
+	kernels := model.GetOnlineKernels()
+	items := make([]*apicontract.SyncOnlineKernel, len(kernels))
+	for i, item := range kernels {
+		items[i] = (*apicontract.SyncOnlineKernel)(item)
 	}
+	ret = apicontract.Success(apicontract.SyncInfoData{Synced: confSyncSnapshot.Synced, Stat: stat, Kernels: items, Kernel: model.KernelID})
+	return
 }
 
-func getBootSync(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var getBootSync = contractHandler(apicontract.GetBootSync, getBootSyncContract)
+
+func getBootSyncContract(c *gin.Context, request apicontract.EmptyRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
 
 	if !model.IsAdminRoleContext(c) {
 		return
 	}
 
-	if model.Conf.Sync.Enabled && 1 == model.BootSyncSucc {
-		ret.Code = 1
-		ret.Msg = model.Conf.Language(17)
+	if model.Conf.Sync.Load().Enabled && 1 == model.BootSyncSucc.Load() {
+		ret = apicontract.Failure[apicontract.Null](1, model.Conf.Language(17))
 		return
 	}
+	return
 }
 
-func performSync(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var performSync = contractHandler(apicontract.PerformSync, performSyncContract)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
+func performSyncContract(c *gin.Context, request apicontract.PerformSyncRequest) (ret apicontract.Response[apicontract.Null]) {
+	confSyncSnapshot := model.Conf.LoadSync()
+
+	ret = apicontract.Success(apicontract.Null{})
 
 	// Android 端前后台切换时自动触发同步 https://github.com/siyuan-note/siyuan/issues/7122
-	var mobileSwitch bool
-	if mobileSwitchArg := arg["mobileSwitch"]; nil != mobileSwitchArg {
-		mobileSwitch = mobileSwitchArg.(bool)
-	}
+	mobileSwitch := request.MobileSwitch
 	if mobileSwitch {
-		if nil == model.Conf.GetUser() || !model.Conf.Sync.Enabled {
+		if !util.IsBooted() {
+			return
+		}
+		if nil == model.Conf.GetUser() || !confSyncSnapshot.Enabled {
 			return
 		}
 	}
 
-	if 3 != model.Conf.Sync.Mode {
+	if 3 != confSyncSnapshot.Mode {
 		model.SyncData(true)
 		return
 	}
 
 	// 云端同步模式支持 `完全手动同步` 模式 https://github.com/siyuan-note/siyuan/issues/7295
-	uploadArg := arg["upload"]
-	if nil == uploadArg {
-		// 必须传入同步方向，未传的话不执行同步
-		return
+	upload, err := request.UploadDirection()
+	if err != nil {
+		return apicontract.Failure[apicontract.Null](-1, err.Error())
 	}
-
-	upload := uploadArg.(bool)
 	if upload {
 		model.SyncDataUpload()
 	} else {
 		model.SyncDataDownload()
 	}
+	return
 }
 
-func performBootSync(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var performBootSync = contractHandler(apicontract.PerformBootSync, performBootSyncContract)
+
+func performBootSyncContract(c *gin.Context, request apicontract.EmptyRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
 	model.BootSyncData()
-	ret.Code = model.BootSyncSucc
+	if syncResult := model.BootSyncSucc.Load(); syncResult != 0 {
+		ret = apicontract.Failure[apicontract.Null](int(syncResult), "")
+	}
+	return
 }
 
-func listCloudSyncDir(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var listCloudSyncDir = contractHandler(apicontract.ListCloudSyncDir, listCloudSyncDirContract)
+
+func listCloudSyncDirContract(c *gin.Context, request apicontract.EmptyRequest) (ret apicontract.Response[apicontract.CloudSyncDirsData]) {
+	confSyncSnapshot := model.Conf.LoadSync()
 
 	syncDirs, hSize, err := model.ListCloudSyncDir()
 	if err != nil {
-		ret.Code = 1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
+		ret = apicontract.FailureWithTimeout[apicontract.CloudSyncDirsData](1, err.Error(), 5000)
 		return
 	}
 
-	ret.Data = map[string]interface{}{
-		"syncDirs":       syncDirs,
-		"hSize":          hSize,
-		"checkedSyncDir": model.Conf.Sync.CloudName,
+	checkedSyncDir := confSyncSnapshot.CloudName
+	if conf.ProviderS3 == confSyncSnapshot.Provider {
+		checkedSyncDir = ""
 	}
+	var items []*apicontract.CloudSyncDir
+	if syncDirs != nil {
+		items = make([]*apicontract.CloudSyncDir, len(syncDirs))
+		for i, item := range syncDirs {
+			items[i] = (*apicontract.CloudSyncDir)(item)
+		}
+	}
+	ret = apicontract.Success(apicontract.CloudSyncDirsData{SyncDirs: items, HSize: hSize, CheckedSyncDir: checkedSyncDir})
+	return
 }
 
-func removeCloudSyncDir(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var removeCloudSyncDir = contractHandler(apicontract.RemoveCloudSyncDir, removeCloudSyncDirContract)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
+func removeCloudSyncDirContract(c *gin.Context, request apicontract.SyncNameRequest) (ret apicontract.Response[string]) {
 
-	name := arg["name"].(string)
+	name := request.Name
+	// 删除云端目录是网络操作，不持有配置互斥锁；删除当前目录时回退的目录名在完成后统一通知
 	err := model.RemoveCloudSyncDir(name)
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
+		ret = apicontract.FailureWithTimeout[string](-1, err.Error(), 5000)
 		return
 	}
+	settingMutationMu.Lock()
+	model.NotifyConfChanged("sync")
+	settingMutationMu.Unlock()
 
-	ret.Data = model.Conf.Sync.CloudName
+	ret = apicontract.Success(model.Conf.Sync.Load().CloudName)
+	return
 }
 
-func createCloudSyncDir(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var createCloudSyncDir = contractHandler(apicontract.CreateCloudSyncDir, createCloudSyncDirContract)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
+func createCloudSyncDirContract(c *gin.Context, request apicontract.SyncNameRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
 
-	name := arg["name"].(string)
+	name := request.Name
 	err := model.CreateCloudSyncDir(name)
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
+		ret = apicontract.FailureWithTimeout[apicontract.Null](-1, err.Error(), 5000)
 		return
 	}
+	return
 }
 
-func setSyncGenerateConflictDoc(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var setSyncGenerateConflictDoc = contractHandler(apicontract.SetSyncGenerateConflictDoc, setSyncGenerateConflictDocContract)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
+func setSyncGenerateConflictDocContract(c *gin.Context, request apicontract.SyncEnabledRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
 
-	enabled := arg["enabled"].(bool)
+	enabled := request.Enabled
 	model.SetSyncGenerateConflictDoc(enabled)
+	return
 }
 
-func setSyncEnable(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var setSyncEnable = contractHandler(apicontract.SetSyncEnable, setSyncEnableContract)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
+func setSyncEnableContract(c *gin.Context, request apicontract.SyncEnabledRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
 
-	enabled := arg["enabled"].(bool)
+	enabled := request.Enabled
 	model.SetSyncEnable(enabled)
+	return
 }
 
-func setSyncInterval(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-	interval := int(arg["interval"].(float64))
-	model.SetSyncInterval(interval)
+var setSyncInterval = contractHandler(apicontract.SetSyncInterval, setSyncIntervalContract)
+
+func setSyncIntervalContract(c *gin.Context, request apicontract.SyncIntervalRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
+	interval := request.Interval
+	model.SetSyncInterval(int(interval))
+	return
 }
 
-func setSyncPerception(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var setSyncPerception = contractHandler(apicontract.SetSyncPerception, setSyncPerceptionContract)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
+func setSyncPerceptionContract(c *gin.Context, request apicontract.SyncEnabledRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
 
-	enabled := arg["enabled"].(bool)
+	enabled := request.Enabled
 	model.SetSyncPerception(enabled)
+	return
 }
 
-func setSyncMode(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var setSyncLAN = contractHandler(apicontract.SetSyncLAN, setSyncLANContract)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
+func setSyncLANContract(c *gin.Context, request apicontract.SyncLANRequest) (ret apicontract.Response[apicontract.SyncLANStatus]) {
 
-	mode := int(arg["mode"].(float64))
-	model.SetSyncMode(mode)
+	enabled, maxConcurrentReqs := request.Enabled, request.MaxConcurrentReqs
+	model.SetSyncLAN(enabled, int(maxConcurrentReqs))
+	ret = apicontract.Success(apicontract.SyncLANStatus(model.GetSyncLANStatus()))
+	return
 }
 
-func setSyncProvider(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var getSyncLANStatus = contractHandler(apicontract.GetSyncLANStatus, getSyncLANStatusContract)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	provider := int(arg["provider"].(float64))
-	err := model.SetSyncProvider(provider)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
-	}
+func getSyncLANStatusContract(c *gin.Context, request apicontract.EmptyRequest) (ret apicontract.Response[apicontract.SyncLANStatus]) {
+	ret = apicontract.Success(apicontract.SyncLANStatus(model.GetSyncLANStatus()))
+	return
 }
 
-func setSyncProviderS3(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var setSyncAssetDownloadMode = contractHandler(apicontract.SetSyncAssetDownloadMode, setSyncAssetDownloadModeContract)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
+func setSyncAssetDownloadModeContract(c *gin.Context, request apicontract.SyncModeRequest) (ret apicontract.Response[apicontract.SyncAssetDownloadModeData]) {
+	mode := request.Mode
+	if mode != 0 && mode != 1 {
+		ret = apicontract.Failure[apicontract.SyncAssetDownloadModeData](-1, "invalid asset download mode")
 		return
 	}
-
-	s3Arg := arg["s3"].(interface{})
-	data, err := gulu.JSON.MarshalJSON(s3Arg)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
+	if err := model.SetSyncAssetDownloadMode(int(mode)); err != nil {
+		ret = apicontract.FailureWithTimeout[apicontract.SyncAssetDownloadModeData](-1, err.Error(), 7000)
 		return
 	}
-
-	s3 := &conf.S3{}
-	if err = gulu.JSON.UnmarshalJSON(data, s3); err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
-	}
-
-	err = model.SetSyncProviderS3(s3)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
-	}
+	ret = apicontract.Success(apicontract.SyncAssetDownloadModeData{AssetDownloadMode: int(mode)})
+	return
 }
 
-func setSyncProviderWebDAV(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var setSyncMode = contractHandler(apicontract.SetSyncMode, setSyncModeContract)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
+func setSyncModeContract(c *gin.Context, request apicontract.SyncModeRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
 
-	webdavArg := arg["webdav"].(interface{})
-	data, err := gulu.JSON.MarshalJSON(webdavArg)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
-	}
-
-	webdav := &conf.WebDAV{}
-	if err = gulu.JSON.UnmarshalJSON(data, webdav); err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
-	}
-
-	err = model.SetSyncProviderWebDAV(webdav)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
-	}
+	mode := request.Mode
+	model.SetSyncMode(int(mode))
+	return
 }
 
-func setSyncProviderLocal(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var setSyncProvider = contractHandler(apicontract.SetSyncProvider, setSyncProviderContract)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
+func setSyncProviderContract(c *gin.Context, request apicontract.SyncProviderRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
 
-	localArg := arg["local"].(interface{})
-	data, err := gulu.JSON.MarshalJSON(localArg)
+	provider := request.Provider
+	err := model.SetSyncProvider(int(provider), request.CompleteAssets)
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
+		ret = apicontract.FailureWithTimeout[apicontract.Null](-1, err.Error(), 5000)
 		return
 	}
-
-	local := &conf.Local{}
-	if err = gulu.JSON.UnmarshalJSON(data, local); err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
-	}
-
-	err = model.SetSyncProviderLocal(local)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
-	}
-
-	ret.Data = map[string]interface{}{
-		"local": local,
-	}
+	return
 }
 
-func setCloudSyncDir(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var setSyncProviderS3 = contractHandler(apicontract.SetSyncProviderS3, setSyncProviderS3Contract)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
+var clearSyncProviderConfig = contractHandler(apicontract.ClearSyncProviderConfig, func(c *gin.Context, request apicontract.ClearSyncProviderConfigRequest) apicontract.Response[apicontract.ClearSyncProviderConfigData] {
+
+	if err := model.ClearSyncProviderConfig(request.Provider); err != nil {
+		return apicontract.Failure[apicontract.ClearSyncProviderConfigData](-1, err.Error())
+	}
+	confSyncSnapshot := model.Conf.LoadSync()
+	data := apicontract.ClearSyncProviderConfigData{Enabled: confSyncSnapshot.Enabled}
+	switch request.Provider {
+	case conf.ProviderS3:
+		data.S3 = (*apicontract.SyncS3)(confSyncSnapshot.S3)
+	case conf.ProviderWebDAV:
+		data.WebDAV = (*apicontract.SyncWebDAV)(confSyncSnapshot.WebDAV)
+	case conf.ProviderLocal:
+		data.Local = (*apicontract.SyncLocal)(confSyncSnapshot.Local)
+	}
+	return apicontract.Success(data)
+})
+
+func setSyncProviderS3Contract(c *gin.Context, request apicontract.SetSyncS3Request) (ret apicontract.Response[apicontract.SyncS3Data]) {
+	confSyncSnapshot := model.Conf.LoadSync()
+
+	if err := request.ConfigError(); err != nil {
+		return apicontract.FailureWithTimeout[apicontract.SyncS3Data](-1, err.Error(), 5000)
+	}
+	s3 := (*conf.S3)(&request.S3)
+
+	newBucket := strings.TrimSpace(s3.Bucket)
+	prevBucket := strings.TrimSpace(confSyncSnapshot.S3.Bucket)
+	if newBucket != prevBucket && !cloud.IsValidCloudDirName(newBucket) {
+		ret = apicontract.FailureWithTimeout[apicontract.SyncS3Data](-1, model.Conf.Language(37), 5000)
 		return
 	}
 
-	name := arg["name"].(string)
-	model.SetCloudSyncDir(name)
+	err := model.SetSyncProviderS3(s3)
+	if err != nil {
+		ret = apicontract.FailureWithTimeout[apicontract.SyncS3Data](-1, err.Error(), 5000)
+		return
+	}
+
+	ret = apicontract.Success(apicontract.SyncS3Data{S3: (*apicontract.SyncS3)(model.Conf.LoadSync().S3)})
+	return
+}
+
+var setSyncProviderWebDAV = contractHandler(apicontract.SetSyncProviderWebDAV, setSyncProviderWebDAVContract)
+
+func setSyncProviderWebDAVContract(c *gin.Context, request apicontract.SetSyncWebDAVRequest) (ret apicontract.Response[apicontract.SyncWebDAVData]) {
+
+	if err := request.ConfigError(); err != nil {
+		return apicontract.FailureWithTimeout[apicontract.SyncWebDAVData](-1, err.Error(), 5000)
+	}
+	webdav := (*conf.WebDAV)(&request.WebDAV)
+
+	err := model.SetSyncProviderWebDAV(webdav)
+	if err != nil {
+		ret = apicontract.FailureWithTimeout[apicontract.SyncWebDAVData](-1, err.Error(), 5000)
+		return
+	}
+
+	ret = apicontract.Success(apicontract.SyncWebDAVData{WebDAV: (*apicontract.SyncWebDAV)(model.Conf.Sync.Load().WebDAV)})
+	return
+}
+
+var setSyncProviderLocal = contractHandler(apicontract.SetSyncProviderLocal, setSyncProviderLocalContract)
+
+func setSyncProviderLocalContract(c *gin.Context, request apicontract.SetSyncLocalRequest) (ret apicontract.Response[apicontract.SyncLocalData]) {
+
+	if err := request.ConfigError(); err != nil {
+		return apicontract.FailureWithTimeout[apicontract.SyncLocalData](-1, err.Error(), 5000)
+	}
+	local := (*conf.Local)(&request.Local)
+
+	err := model.SetSyncProviderLocal(local)
+	if err != nil {
+		ret = apicontract.FailureWithTimeout[apicontract.SyncLocalData](-1, err.Error(), 5000)
+		return
+	}
+
+	ret = apicontract.Success(apicontract.SyncLocalData{Local: (*apicontract.SyncLocal)(model.Conf.Sync.Load().Local)})
+	return
+}
+
+var setCloudSyncDir = contractHandler(apicontract.SetCloudSyncDir, setCloudSyncDirContract)
+
+func setCloudSyncDirContract(c *gin.Context, request apicontract.SyncNameRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
+
+	name := request.Name
+	if err := model.SetCloudSyncDir(name); err != nil {
+		ret = apicontract.Failure[apicontract.Null](-1, err.Error())
+	}
+	return
 }

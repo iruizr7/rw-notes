@@ -2,7 +2,7 @@
 
 This document describes how RW Notes is put together so future agents can find the correct layer before changing behavior.
 
-It is intentionally practical rather than exhaustive. The runtime/package sections describe the current code; the final target-architecture section describes planned work, not implemented capabilities. When the architecture changes materially, this file should be updated in the same change.
+It is intentionally practical rather than exhaustive. The runtime/package sections provide a navigation map, originally reviewed on 3.5.8 and pending a full M0 refresh against 3.8.8; the final target-architecture section describes planned work, not implemented capabilities. When the architecture changes materially, this file should be updated in the same change.
 
 Product scope, terms, roles, reconciliation rules, and delivery gates are defined in [saas-plan.md](./saas-plan.md). That plan is authoritative for the v0 target.
 
@@ -25,9 +25,9 @@ Native apps are maintained as separate GitHub forks, checked out beside this rep
 | Android | [iruizr7/rw-notes-android](https://github.com/iruizr7/rw-notes-android) | `../rw-notes-android/` |
 | iOS | [iruizr7/rw-notes-ios](https://github.com/iruizr7/rw-notes-ios) | `../rw-notes-ios/` |
 
-Each mobile checkout uses `origin` for our fork and `upstream` for the corresponding official `siyuan-note/siyuan-*` repository. Its clean `main` branch tracks `upstream/main`; `rw-notes` tracks `origin/rw-notes` and is the fork's default development branch. Integrate upstream changes into `main` first, then merge into `rw-notes`. Preserve the core repository's existing `master`/`rw-notes` structure.
+Each mobile checkout uses `origin` for our fork and `upstream` for the corresponding official `siyuan-note/siyuan-*` repository. Its clean `main` branch tracks `upstream/main`; `rw-notes` tracks `origin/rw-notes` and is the fork's default development branch. Fetch upstream changes into the tracking branch first, then deliberately select an integration revision for `rw-notes`; do not automatically import the latest mobile head. Preserve the core repository's existing `master`/`rw-notes` structure.
 
-The mobile forks were initialized from their upstream heads on 2026-10-22. Repository setup does not establish compatibility with the core's current upstream baseline or completion of native builds. Before release, pin and test a core/native commit combination and build the shared frontend/kernel artifacts from that core revision. Mobile development targets Android and iOS; HarmonyOS is out of scope.
+The selected source baseline is now core/Android **3.8.8** and iOS **`05280f32ba89705e3ba55c233037db02c93cdea8`**. [upstream-baseline.md](./upstream-baseline.md) records full SHAs, integration decisions and validation status. Native compatibility still needs matching frontend/kernel builds and device checks; the selected iOS SHA is not proven to be the App Store build source. Mobile development targets Android and iOS; HarmonyOS is out of scope.
 
 ### Core repository directories
 

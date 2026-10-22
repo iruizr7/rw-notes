@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -18,6 +18,7 @@ package api
 
 import (
 	"fmt"
+	"html"
 	"math"
 	"net/http"
 	"regexp"
@@ -26,9 +27,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/siyuan-note/siyuan/kernel/apicontract"
+	"github.com/siyuan-note/siyuan/kernel/conf"
 	"github.com/siyuan-note/siyuan/kernel/model"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
+
+var iconHanPattern = regexp.MustCompile(`[\p{Han}]`)
 
 type ColorScheme struct {
 	Primary   string
@@ -112,7 +117,9 @@ func darkenColor(hexColor string, factor float64) string {
 	return fmt.Sprintf("#%02X%02X%02X", r, g, b)
 }
 
-func getDynamicIcon(c *gin.Context) {
+var getDynamicIcon = contractHandler(apicontract.GetDynamicIcon, func(c *gin.Context, request apicontract.EmptyRequest) apicontract.Response[apicontract.BinaryContent] {
+	confAppearanceSnapshot := model.Conf.LoadAppearance()
+
 	// Add internal kernel API `/api/icon/getDynamicIcon` https://github.com/siyuan-note/siyuan/pull/12939
 
 	iconType := c.Query("type")
@@ -125,7 +132,8 @@ func getDynamicIcon(c *gin.Context) {
 	if "" == lang {
 		lang = util.Lang
 	}
-	weekdayType := c.Query("weekdayType") // 设置星期几的格式，zh_CH {1：周日，2：周天， 3：星期日，4：星期天，}, en_US {1: Mon, 2: MON，3: Monday, 4. MONDAY,}
+	lang = util.LangToBCP47(lang)
+	weekdayType := c.Query("weekdayType") // 设置星期几的格式，zh-CN {1：周日，2：周天， 3：星期日，4：星期天，}, en {1: Mon, 2: MON，3: Monday, 4. MONDAY,}
 	if "" == weekdayType {
 		weekdayType = "1"
 	}
@@ -135,19 +143,19 @@ func getDynamicIcon(c *gin.Context) {
 	switch iconType {
 	case "1":
 		// Type 1: 显示年月日星期
-		svg = generateTypeOneSVG(color, lang, dateInfo)
+		svg = generateTypeOneSVG(color, dateInfo)
 	case "2":
 		// Type 2: 显示年月日
-		svg = generateTypeTwoSVG(color, lang, dateInfo)
+		svg = generateTypeTwoSVG(color, dateInfo)
 	case "3":
 		// Type 3: 显示年月
-		svg = generateTypeThreeSVG(color, lang, dateInfo)
+		svg = generateTypeThreeSVG(color, dateInfo)
 	case "4":
 		// Type 4: 仅显示年
-		svg = generateTypeFourSVG(color, lang, dateInfo)
+		svg = generateTypeFourSVG(color, dateInfo)
 	case "5":
 		// Type 5: 显示周数
-		svg = generateTypeFiveSVG(color, lang, dateInfo)
+		svg = generateTypeFiveSVG(color, dateInfo)
 	case "6":
 		// Type 6: 仅显示星期
 		svg = generateTypeSixSVG(color, lang, weekdayType, dateInfo)
@@ -158,23 +166,88 @@ func getDynamicIcon(c *gin.Context) {
 		// Type 8: 文字图标
 		content := c.Query("content")
 		id := c.Query("id")
-		svg = generateTypeEightSVG(color, content, id)
+		if strings.Contains(content, ".action{") {
+			// 模板内容会按 id 读取工作区数据，只读角色必须通过发布访问控制后才能执行
+			// https://github.com/siyuan-note/siyuan/security/advisories/GHSA-whcx-xxqh-c838
+			// 只读角色的模板源码由内核从块已保存的图标属性中取得，不使用请求中的 content
+			// https://github.com/siyuan-note/siyuan/security/advisories/GHSA-cxwr-r7cq-xw52
+			if !dynamicIconContentAccessable(c, id) {
+				// 空内容保持与 id 不存在时一致的响应结构，避免泄露文档的可访问状态
+				svg = generateTypeEightSVG(color, "")
+				break
+			}
+			content = model.RenderDynamicIconContentTemplate(c, content, id)
+		}
+		svg = generateTypeEightSVG(color, content)
 	default:
 		// 默认为Type 1
-		svg = generateTypeOneSVG(color, lang, dateInfo)
+		svg = generateTypeOneSVG(color, dateInfo)
 	}
 
-	if !model.Conf.Editor.AllowSVGScript {
-		svg = util.RemoveScriptsInSVG(svg)
+	var fonts []*conf.EditorFont
+	if "8" == iconType && nil != confAppearanceSnapshot {
+		fonts = confAppearanceSnapshot.GlobalFontFamilies
+	}
+	svg = applyDynamicIconFont(svg, fonts)
+
+	if !model.Conf.Editor.Load().AllowSVGScript {
+		var err error
+		svg, err = util.SanitizeSVG(svg)
+		if err != nil {
+			return apicontract.EmptyHTTPResponse[apicontract.BinaryContent](http.StatusInternalServerError)
+		}
 	}
 
 	c.Header("Content-Type", "image/svg+xml")
+	c.Header("Content-Security-Policy", "script-src 'none'; object-src 'none'; base-uri 'none'")
+	c.Header("X-Content-Type-Options", "nosniff")
+	// 响应内容随角色与发布密码 Cookie 变化，避免中间缓存跨调用方回放
+	c.Header("Vary", "Cookie")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Pragma", "no-cache")
-	c.String(http.StatusOK, svg)
+	return apicontract.SuccessBinary("image/svg+xml", []byte(svg))
+})
+
+// applyDynamicIconFont 将全局字体和首选字重应用到 SVG 根节点，供所有文本继承。
+func applyDynamicIconFont(svg string, fonts []*conf.EditorFont) string {
+	const fallback = "-apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'"
+	families := make([]string, 0, len(fonts)+1)
+	weight := 400
+	for _, font := range fonts {
+		if nil == font || "" == font.Family {
+			continue
+		}
+		if 0 == len(families) && 1 <= font.Weight && font.Weight <= 1000 {
+			weight = font.Weight
+		}
+		// 字体名称作为 CSS 字符串编码，再对整个属性进行 XML 转义。
+		var family strings.Builder
+		family.WriteByte('"')
+		for _, char := range font.Family {
+			if '\\' == char || '"' == char || char < 0x20 || 0x7f == char {
+				fmt.Fprintf(&family, "\\%x ", char)
+			} else {
+				family.WriteRune(char)
+			}
+		}
+		family.WriteByte('"')
+		families = append(families, family.String())
+	}
+	families = append(families, fallback)
+	attributes := fmt.Sprintf(`<svg font-family="%s" font-weight="%d" `, html.EscapeString(strings.Join(families, ", ")), weight)
+	return strings.Replace(svg, "<svg ", attributes, 1)
 }
 
-func getDateInfo(dateStr string, lang string, weekdayType string) map[string]interface{} {
+// dynamicIconContentAccessable 判断调用方是否可读取动态图标模板内容所引用的块。
+// 管理员与编辑者拥有工作区读权限，只读角色则需要通过发布访问控制（禁用、密码与加密笔记本门禁）。
+func dynamicIconContentAccessable(c *gin.Context, id string) bool {
+	if !model.IsReadOnlyRoleContext(c) {
+		return true
+	}
+	return model.CheckBlockIdMetadataAccessableByPublishAccess(c, model.GetPublishAccess(), id)
+}
+
+func getDateInfo(dateStr string, lang string, weekdayType string) map[string]any {
 	// 设置默认值
 	var date time.Time
 	var err error
@@ -194,7 +267,7 @@ func getDateInfo(dateStr string, lang string, weekdayType string) map[string]int
 	var weekdays []string
 
 	switch lang {
-	case "zh_CN":
+	case "zh-CN":
 		month = date.Format("1月")
 		switch weekdayType {
 		case "1":
@@ -209,7 +282,7 @@ func getDateInfo(dateStr string, lang string, weekdayType string) map[string]int
 			weekdays = []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
 		}
 		weekdayStr = weekdays[date.Weekday()]
-	case "zh_CHT":
+	case "zh-TW":
 		month = date.Format("1月")
 		switch weekdayType {
 		case "1":
@@ -247,9 +320,9 @@ func getDateInfo(dateStr string, lang string, weekdayType string) map[string]int
 	weekNumStr := fmt.Sprintf("%dW", weekNum)
 
 	switch lang {
-	case "zh_CN":
+	case "zh-CN":
 		weekNumStr = fmt.Sprintf("%d周", weekNum)
-	case "zh_CHT":
+	case "zh-TW":
 		weekNumStr = fmt.Sprintf("%d週", weekNum)
 	}
 	// 判断是否是周末
@@ -261,7 +334,7 @@ func getDateInfo(dateStr string, lang string, weekdayType string) map[string]int
 	// countDown := int(math.Floor(date.Sub(today).Hours() / 24)) // 注意最大返回106751天，go的时间戳最大值
 	countDown := daysBetween(today, date)
 
-	return map[string]interface{}{
+	return map[string]any{
 		"year":      year,
 		"isoYear":   isoYear,
 		"month":     month,
@@ -297,7 +370,7 @@ func daysBetween(date1, date2 time.Time) int {
 	}
 
 	// 加上最后一年的天数
-	days += int(date2.YearDay() - date1.YearDay())
+	days += date2.YearDay() - date1.YearDay()
 
 	// 如果原始的date1晚于date2，返回负值
 	if swap {
@@ -312,38 +385,38 @@ func isLeapYear(year int) bool {
 }
 
 // Type 1: 显示年月日星期
-func generateTypeOneSVG(color string, lang string, dateInfo map[string]interface{}) string {
+func generateTypeOneSVG(color string, dateInfo map[string]any) string {
 	colorScheme := getColorScheme(color)
 
 	return fmt.Sprintf(`
     <svg id="dynamic_icon_type1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
     <path d="M512,447.5c0,32-25,57-57,57H57c-32,0-57-25-57-57V120.5c0-31,25-57,57-57h398c32,0,57,26,57,57v327Z" style="fill: #ecf2f7;"/>
     <path d="M39,0h434c21.52,0,39,17.48,39,39v146H0V39C0,17.48,17.48,0,39,0Z" style="fill: %s;"/>
-    <text transform="translate(22 146.5)" style="fill: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; font-size: 100px;">%s</text>
-    <text x="50%%" y="392.5" style="fill: #66757f; font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; font-size: 240px; text-anchor: middle">%d</text>
-    <text x="50%%" y="472.5" style="fill: #66757f; font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; font-size: 64px; text-anchor: middle">%s</text>
-    <text transform="translate(331.03 148.44)" style="fill: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; font-size: 71.18px;">%d</text>
+    <text transform="translate(22 146.5)" style="fill: #fff; font-size: 100px;">%s</text>
+    <text x="50%%" y="392.5" style="fill: #66757f; font-size: 240px; text-anchor: middle">%d</text>
+    <text x="50%%" y="472.5" style="fill: #66757f; font-size: 64px; text-anchor: middle">%s</text>
+    <text transform="translate(331.03 148.44)" style="fill: #fff; font-size: 71.18px;">%d</text>
     </svg>
     `, colorScheme.Primary, dateInfo["month"], dateInfo["day"], dateInfo["weekday"], dateInfo["year"])
 }
 
 // Type 2: 显示年月日
-func generateTypeTwoSVG(color string, lang string, dateInfo map[string]interface{}) string {
+func generateTypeTwoSVG(color string, dateInfo map[string]any) string {
 	colorScheme := getColorScheme(color)
 
 	return fmt.Sprintf(`
     <svg id="dynamic_icon_type2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
     <path d="M512,447.5c0,32-25,57-57,57H57c-32,0-57-25-57-57V120.5c0-31,25-57,57-57h398c32,0,57,26,57,57v327Z" style="fill: #ecf2f7;"/>
     <path d="M39,0h434c21.52,0,39,17.48,39,39v146H0V39C0,17.48,17.48,0,39,0Z" style="fill: %s;"/>
-    <text transform="translate(22 146.5)" style="fill: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; font-size: 100px;">%s</text>
-    <text x="50%%" y="420.5"  style="fill: #66757f; font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; font-size: 256px;text-anchor: middle">%d</text>
-    <text transform="translate(331.03 148.44)" style="fill: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; font-size: 71.18px;">%d</text>
+    <text transform="translate(22 146.5)" style="fill: #fff; font-size: 100px;">%s</text>
+    <text x="50%%" y="420.5"  style="fill: #66757f; font-size: 256px;text-anchor: middle">%d</text>
+    <text transform="translate(331.03 148.44)" style="fill: #fff; font-size: 71.18px;">%d</text>
     </svg>
     `, colorScheme.Primary, dateInfo["month"], dateInfo["day"], dateInfo["year"])
 }
 
 // Type 3: 显示年月
-func generateTypeThreeSVG(color string, lang string, dateInfo map[string]interface{}) string {
+func generateTypeThreeSVG(color string, dateInfo map[string]any) string {
 	colorScheme := getColorScheme(color)
 
 	return fmt.Sprintf(`
@@ -358,14 +431,14 @@ func generateTypeThreeSVG(color string, lang string, dateInfo map[string]interfa
             <circle  cx="382.5" cy="135" r="14"/>
             <circle  cx="382.5" cy="93" r="14"/>
         </g>
-        <text transform="translate(22 146.5)" style="fill: #fff;font-size: 120px; font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; ">%d</text>
-        <text x="50%%" y="410.5" style="fill: #66757f;font-size: 200px;text-anchor: middle;font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; ">%s</text>
+        <text transform="translate(22 146.5)" style="fill: #fff;font-size: 120px; ">%d</text>
+        <text x="50%%" y="410.5" style="fill: #66757f;font-size: 200px;text-anchor: middle;">%s</text>
     </svg>
     `, colorScheme.Primary, colorScheme.Secondary, dateInfo["year"], dateInfo["month"])
 }
 
 // Type 4: 仅显示年
-func generateTypeFourSVG(color string, lang string, dateInfo map[string]interface{}) string {
+func generateTypeFourSVG(color string, dateInfo map[string]any) string {
 	colorScheme := getColorScheme(color)
 
 	return fmt.Sprintf(`
@@ -380,13 +453,13 @@ func generateTypeFourSVG(color string, lang string, dateInfo map[string]interfac
             <circle  cx="382.5" cy="135" r="14"/>
             <circle  cx="382.5" cy="93" r="14"/>
         </g>
-        <text x="50%%" y="410.5" style="fill: #66757f;font-size: 200px;text-anchor: middle;font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; ">%d</text>
+        <text x="50%%" y="410.5" style="fill: #66757f;font-size: 200px;text-anchor: middle;">%d</text>
     </svg>
     `, colorScheme.Primary, colorScheme.Secondary, dateInfo["year"])
 }
 
 // Type 5:: 显示周数
-func generateTypeFiveSVG(color string, lang string, dateInfo map[string]interface{}) string {
+func generateTypeFiveSVG(color string, dateInfo map[string]any) string {
 	colorScheme := getColorScheme(color)
 
 	return fmt.Sprintf(`
@@ -401,14 +474,14 @@ func generateTypeFiveSVG(color string, lang string, dateInfo map[string]interfac
             <circle  cx="382.5" cy="135" r="14"/>
             <circle  cx="382.5" cy="93" r="14"/>
         </g>
-        <text transform="translate(22 146.5)" style="fill: #fff;font-size: 120px; font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; ">%d</text>
-        <text x="50%%" y="410.5" style="fill: #66757f;font-size: 200px;text-anchor: middle;font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; ">%s</text>
+        <text transform="translate(22 146.5)" style="fill: #fff;font-size: 120px; ">%d</text>
+        <text x="50%%" y="410.5" style="fill: #66757f;font-size: 200px;text-anchor: middle;">%s</text>
     </svg>
     `, colorScheme.Primary, colorScheme.Secondary, dateInfo["isoYear"], dateInfo["week"])
 }
 
 // Type 6: 仅显示星期
-func generateTypeSixSVG(color string, lang string, weekdayType string, dateInfo map[string]interface{}) string {
+func generateTypeSixSVG(color string, lang string, weekdayType string, dateInfo map[string]any) string {
 
 	weekday := dateInfo["weekday"].(string)
 	isWeekend := dateInfo["isWeekend"].(bool)
@@ -427,7 +500,7 @@ func generateTypeSixSVG(color string, lang string, weekdayType string, dateInfo 
 	// 动态变化字体大小
 	var fontSize float64
 	switch lang {
-	case "zh_CN", "zh_CHT":
+	case "zh-CN", "zh-TW":
 		fontSize = 460 / float64(len([]rune(weekday)))
 	default:
 		switch weekdayType {
@@ -456,12 +529,12 @@ func generateTypeSixSVG(color string, lang string, weekdayType string, dateInfo 
         <circle cx="382.5" cy="113.5" r="14"/>
         <circle cx="382.5" cy="71.5" r="14"/>
     </g>
-    <text id="weekday" x="50%%"  y="65%%" style="fill: %s; font-size: %.2fpx; text-anchor: middle; dominant-baseline:middle; font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei';">%s</text>
+    <text id="weekday" x="50%%"  y="65%%" style="fill: %s; font-size: %.2fpx; text-anchor: middle; dominant-baseline:middle;">%s</text>
     </svg>`, colorScheme.Primary, colorScheme.Secondary, colorScheme.Primary, fontSize, weekday)
 }
 
 // Type7: 倒数日
-func generateTypeSevenSVG(color string, lang string, dateInfo map[string]interface{}) string {
+func generateTypeSevenSVG(color string, lang string, dateInfo map[string]any) string {
 	colorScheme := getColorScheme(color)
 
 	diffDays := dateInfo["countDown"].(int)
@@ -472,7 +545,7 @@ func generateTypeSevenSVG(color string, lang string, dateInfo map[string]interfa
 	switch {
 	case diffDays == 0:
 		switch lang {
-		case "zh_CN", "zh_CHT":
+		case "zh-CN", "zh-TW":
 			tipText = "今天"
 		default:
 			tipText = "Today"
@@ -480,9 +553,9 @@ func generateTypeSevenSVG(color string, lang string, dateInfo map[string]interfa
 		diffDaysText = "--"
 	case diffDays > 0:
 		switch lang {
-		case "zh_CN":
+		case "zh-CN":
 			tipText = "还有"
-		case "zh_CHT":
+		case "zh-TW":
 			tipText = "還有"
 		default:
 			tipText = "Left"
@@ -490,9 +563,9 @@ func generateTypeSevenSVG(color string, lang string, dateInfo map[string]interfa
 		diffDaysText = fmt.Sprintf("%d", diffDays)
 	default:
 		switch lang {
-		case "zh_CN":
+		case "zh-CN":
 			tipText = "已过"
-		case "zh_CHT":
+		case "zh-TW":
 			tipText = "已過"
 		default:
 			tipText = "Past"
@@ -503,7 +576,7 @@ func generateTypeSevenSVG(color string, lang string, dateInfo map[string]interfa
 
 	var dayStr string
 	switch lang {
-	case "zh_CN", "zh_CHT":
+	case "zh-CN", "zh-TW":
 		dayStr = "天"
 	default:
 		dayStr = "days"
@@ -525,47 +598,53 @@ func generateTypeSevenSVG(color string, lang string, dateInfo map[string]interfa
     <svg id="dynamic_icon_type7" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
         <path id="bottom" d="M512,447.5c0,32-25,57-57,57H57c-32,0-57-25-57-57V120.5c0-31,25-57,57-57h398c32,0,57,26,57,57v327Z" style="fill: #ecf2f7;"/>
         <path id="top" d="M39,0h434c21.52,0,39,17.48,39,39v146H0V39C0,17.48,17.48,0,39,0Z" style="fill: %s;"/>
-        <text id="year" transform="translate(46.1 78.92)" style="fill: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; font-size: 60px;">%d</text>
-        <text id="day" transform="translate(43.58 148.44)" style="fill: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; font-size: 60px;">%s</text>
-        <text id="passStr" transform="translate(400 148.44)" style="fill: #fff; text-anchor: middle;font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; font-size: 71.18px;">%s</text>
-        <text id="diffDays" x="50%%" y="65%%" style="font-size: %.0fpx; fill: #66757f; text-anchor: middle; dominant-baseline:middle;font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; ">%s</text>
-        <text id="dayStr" x="50%%" y="472.5" style="font-size: 64px; text-anchor: middle; fill: #66757f; font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei';">%s</text>
+        <text id="year" transform="translate(46.1 78.92)" style="fill: #fff; font-size: 60px;">%d</text>
+        <text id="day" transform="translate(43.58 148.44)" style="fill: #fff; font-size: 60px;">%s</text>
+        <text id="passStr" transform="translate(400 148.44)" style="fill: #fff; text-anchor: middle;font-size: 71.18px;">%s</text>
+        <text id="diffDays" x="50%%" y="65%%" style="font-size: %.0fpx; fill: #66757f; text-anchor: middle; dominant-baseline:middle;">%s</text>
+        <text id="dayStr" x="50%%" y="472.5" style="font-size: 64px; text-anchor: middle; fill: #66757f;">%s</text>
     </svg>`, colorScheme.Primary, dateInfo["year"], dateInfo["date"], tipText, fontSize, diffDaysText, dayStr)
 }
 
 // Type 8: 文字图标
-func generateTypeEightSVG(color, content, id string) string {
-	if strings.Contains(content, ".action{") {
-		content = model.RenderDynamicIconContentTemplate(content, id)
-	}
-
+func generateTypeEightSVG(color, content string) string {
 	colorScheme := getColorScheme(color)
 
+	contentLen := len([]rune(content))
+	if 0 == contentLen {
+		// 内容为空时不输出文本，避免字号按零长度计算得到无效值
+		return fmt.Sprintf(`
+    <svg id="dynamic_icon_type8" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+        <path d="M39,0h434c20.97,0,38,17.03,38,38v412c0,33.11-26.89,60-60,60H60c-32.56,0-59-26.44-59-59V38C1,17.03,18.03,0,39,0Z" style="fill: %s;"/>
+	</svg>
+    `, colorScheme.Primary)
+	}
+
 	// 动态变化字体大小
-	isChinese := regexp.MustCompile(`[\p{Han}]`).MatchString(content)
+	isChinese := iconHanPattern.MatchString(content)
 	var fontSize float64
 	if isChinese {
-		switch {
-		case len([]rune(content)) == 1:
+		switch contentLen {
+		case 1:
 			fontSize = 320
 		default:
-			fontSize = 480 / float64(len([]rune(content)))
+			fontSize = 480 / float64(contentLen)
 		}
 	} else {
-		switch {
-		case len([]rune(content)) == 1:
+		switch contentLen {
+		case 1:
 			fontSize = 480
-		case len([]rune(content)) == 2:
+		case 2:
 			fontSize = 300
-		case len([]rune(content)) == 3:
+		case 3:
 			fontSize = 240
 		default:
-			fontSize = 750 / float64(len([]rune(content)))
+			fontSize = 750 / float64(contentLen)
 		}
 	}
 	// 当内容为单个字符时，一些小写字母需要调整文字位置(暂时没法批量解决)
 	dy := "0%"
-	if len([]rune(content)) == 1 {
+	if contentLen == 1 {
 		switch content {
 		case "g", "p", "y", "q":
 			dy = "-10%"
@@ -576,10 +655,11 @@ func generateTypeEightSVG(color, content, id string) string {
 		}
 	}
 
+	escapedContent := html.EscapeString(content)
 	return fmt.Sprintf(`
     <svg id="dynamic_icon_type8" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
         <path d="M39,0h434c20.97,0,38,17.03,38,38v412c0,33.11-26.89,60-60,60H60c-32.56,0-59-26.44-59-59V38C1,17.03,18.03,0,39,0Z" style="fill: %s;"/>
-        <text x="50%%" y="55%%" dy="%s" style="font-size: %.2fpx; fill: #fff; text-anchor: middle; dominant-baseline:middle;font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft YaHei'; ">%s</text>
+        <text x="50%%" y="55%%" dy="%s" style="font-size: %.2fpx; fill: #fff; text-anchor: middle; dominant-baseline:middle;">%s</text>
 	</svg>
-    `, colorScheme.Primary, dy, fontSize, content)
+    `, colorScheme.Primary, dy, fontSize, escapedContent)
 }

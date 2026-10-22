@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,45 +17,35 @@
 package api
 
 import (
-	"net/http"
+	"errors"
 	"strings"
 
 	"github.com/88250/gulu"
 	"github.com/88250/lute/ast"
 	"github.com/gin-gonic/gin"
+	"github.com/siyuan-note/siyuan/kernel/apicontract"
 	"github.com/siyuan-note/siyuan/kernel/conf"
 	"github.com/siyuan-note/siyuan/kernel/model"
-	"github.com/siyuan-note/siyuan/kernel/util"
 )
 
-func getSnippet(c *gin.Context) {
+var getSnippet = contractHandler(apicontract.GetSnippet, func(c *gin.Context, request apicontract.GetSnippetRequest) apicontract.Response[apicontract.SnippetsData] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
+	typ, enabledArg, keyword := request.Type, request.Enabled, request.Keyword
 
-	typ := arg["type"].(string)                 // js/css/all
-	enabledArg := int(arg["enabled"].(float64)) // 0：禁用，1：启用，2：全部
 	enabled := true
-	if 0 == enabledArg {
+	if 0 == int(enabledArg) {
 		enabled = false
-	}
-	var keyword string
-	if nil != arg["keyword"] {
-		keyword = arg["keyword"].(string)
 	}
 
 	confSnippets, err := model.LoadSnippets()
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = "load snippets failed: " + err.Error()
-		return
+		return contractFailure[apicontract.SnippetsData](ret)
 	}
 
-	isPublish := model.IsReadOnlyRole(model.GetGinContextRole(c))
+	isPublish := model.IsReadOnlyRoleContext(c)
 	var snippets []*conf.Snippet
 	for _, s := range confSnippets {
 		if isPublish && s.DisabledInPublish {
@@ -71,10 +61,12 @@ func getSnippet(c *gin.Context) {
 		snippets = append(snippets, s)
 	}
 
+	keyword = strings.TrimSpace(keyword)
 	if "" != keyword {
+		keyword = strings.ToLower(keyword)
 		var snippetsFiltered []*conf.Snippet
 		for _, s := range snippets {
-			if strings.Contains(strings.ToLower(s.Name), strings.ToLower(keyword)) || strings.Contains(strings.ToLower(s.Content), strings.ToLower(keyword)) {
+			if strings.Contains(strings.ToLower(s.Name), keyword) || strings.Contains(strings.ToLower(s.Content), keyword) {
 				snippetsFiltered = append(snippetsFiltered, s)
 			}
 		}
@@ -85,63 +77,59 @@ func getSnippet(c *gin.Context) {
 		snippets = []*conf.Snippet{}
 	}
 
-	ret.Data = map[string]interface{}{
-		"snippets": snippets,
+	revision := ""
+	if !isPublish {
+		revision = model.SnippetsRevision(confSnippets)
 	}
-}
+	return apicontract.Success(apicontract.SnippetsData{Snippets: snippetContracts(snippets), Revision: revision})
+})
 
-func setSnippet(c *gin.Context) {
+var setSnippet = contractHandler(apicontract.SetSnippet, func(c *gin.Context, request apicontract.SetSnippetRequest) apicontract.Response[apicontract.Null] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	snippetsArg := arg["snippets"].([]interface{})
 	var snippets []*conf.Snippet
-	for _, s := range snippetsArg {
-		m := s.(map[string]interface{})
-		snippet := &conf.Snippet{
-			ID:      m["id"].(string),
-			Name:    m["name"].(string),
-			Type:    m["type"].(string),
-			Content: m["content"].(string),
-			Enabled: m["enabled"].(bool),
-		}
-		if nil != m["disabledInPublish"] {
-			snippet.DisabledInPublish = m["disabledInPublish"].(bool)
-		}
+	for _, s := range request.Snippets {
+		snippet := &conf.Snippet{ID: s.ID, Name: s.Name, Type: s.Type, Content: s.Content, Enabled: s.Enabled, DisabledInPublish: s.DisabledInPublish}
 		if "" == snippet.ID {
 			snippet.ID = ast.NewNodeID()
+		}
+		if "css" == snippet.Type {
+			if strings.Contains(strings.ToLower(snippet.Content), "</style") || strings.Contains(strings.ToLower(snippet.Content), "<script") {
+				ret.Code = -1
+				ret.Msg = "invalid css snippet content"
+				return contractFailure[apicontract.Null](ret)
+			}
 		}
 		snippets = append(snippets, snippet)
 	}
 
-	err := model.SetSnippet(snippets)
+	var err error
+	if request.Revision == nil {
+		err = model.SetSnippet(snippets)
+	} else {
+		err = model.SetSnippet(snippets, *request.Revision)
+	}
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = "set snippet failed: " + err.Error()
-		return
+		if errors.Is(err, model.ErrSnippetConflict) {
+			ret.Msg = model.ErrSnippetConflict.Error()
+		}
+		return contractFailure[apicontract.Null](ret)
 	}
-}
 
-func removeSnippet(c *gin.Context) {
+	return apicontract.Success(apicontract.Null{})
+})
+
+var removeSnippet = contractHandler(apicontract.RemoveSnippet, func(c *gin.Context, request apicontract.TrimmedIDRequest) apicontract.Response[*apicontract.Snippet] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	id := arg["id"].(string)
+	id := request.ID
 	snippet, err := model.RemoveSnippet(id)
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = "remove snippet failed: " + err.Error()
-		return
+		return contractFailure[*apicontract.Snippet](ret)
 	}
-	ret.Data = snippet
-}
+	return apicontract.Success(snippetContract(snippet))
+})

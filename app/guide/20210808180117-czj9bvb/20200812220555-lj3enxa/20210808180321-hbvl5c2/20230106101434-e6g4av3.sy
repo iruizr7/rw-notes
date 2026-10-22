@@ -6,7 +6,7 @@
 		"id": "20230106101434-e6g4av3",
 		"title": "工作空间",
 		"type": "doc",
-		"updated": "20250306083454"
+		"updated": "20261016112115"
 	},
 	"Children": [
 		{
@@ -110,7 +110,7 @@
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20230109113547-eg7zbrh",
-				"updated": "20250306083454"
+				"updated": "20261016112115"
 			},
 			"Children": [
 				{
@@ -125,7 +125,7 @@
 			"ListData": {},
 			"Properties": {
 				"id": "20230106104300-j6nj9t2",
-				"updated": "20250306083454"
+				"updated": "20261016112115"
 			},
 			"Children": [
 				{
@@ -137,7 +137,7 @@
 					},
 					"Properties": {
 						"id": "20230109113554-izjti9n",
-						"updated": "20250306083454"
+						"updated": "20261016112115"
 					},
 					"Children": [
 						{
@@ -159,7 +159,7 @@
 							"Type": "NodeParagraph",
 							"Properties": {
 								"id": "20230109113909-5dp3vml",
-								"updated": "20250306083454"
+								"updated": "20261016112115"
 							},
 							"Children": [
 								{
@@ -169,7 +169,7 @@
 								{
 									"Type": "NodeTextMark",
 									"TextMarkType": "code",
-									"TextMarkTextContent": "--workspace=\u0026quot;工作空间绝对路径\u0026quot;"
+									"TextMarkTextContent": "--workspace=&quot;工作空间绝对路径&quot;"
 								},
 								{
 									"Type": "NodeText",
@@ -178,7 +178,7 @@
 								{
 									"Type": "NodeTextMark",
 									"TextMarkType": "code",
-									"TextMarkTextContent": "\u0026quot;"
+									"TextMarkTextContent": "&quot;"
 								},
 								{
 									"Type": "NodeText",
@@ -187,7 +187,7 @@
 								{
 									"Type": "NodeTextMark",
 									"TextMarkType": "code",
-									"TextMarkTextContent": "--workspace=\u0026quot;F:\\RW Notes\u0026quot;"
+									"TextMarkTextContent": "--workspace=&quot;F:\\RW Notes&quot;"
 								},
 								{
 									"Type": "NodeText",
@@ -200,7 +200,7 @@
 								},
 								{
 									"Type": "NodeText",
-									"Data": "​ 来指定内核监听的端口。"
+									"Data": "​ 来指定内核监听的端口"
 								}
 							]
 						}
@@ -215,7 +215,7 @@
 					},
 					"Properties": {
 						"id": "20230109113624-du5o3e3",
-						"updated": "20230109113641"
+						"updated": "20261016112115"
 					},
 					"Children": [
 						{
@@ -223,21 +223,48 @@
 							"Type": "NodeParagraph",
 							"Properties": {
 								"id": "20230109113624-zjqzh5l",
-								"updated": "20230109113641"
+								"updated": "20261016112115"
 							},
 							"Children": [
 								{
 									"Type": "NodeText",
-									"Data": "移动端可以在右侧栏 "
+									"Data": "移动端可以在 "
 								},
 								{
 									"Type": "NodeTextMark",
 									"TextMarkType": "kbd",
-									"TextMarkTextContent": "关于"
+									"TextMarkTextContent": "更多"
 								},
 								{
 									"Type": "NodeText",
-									"Data": "​​ 中切换不同的工作空间"
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "设置"
+								},
+								{
+									"Type": "NodeText",
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "应用"
+								},
+								{
+									"Type": "NodeText",
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "工作空间"
+								},
+								{
+									"Type": "NodeText",
+									"Data": " 中切换不同的工作空间"
 								}
 							]
 						}
@@ -251,7 +278,7 @@
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20230106104118-wtvw42w",
-				"updated": "20230106104127"
+				"updated": "20260918195936"
 			},
 			"Children": [
 				{
@@ -543,6 +570,20 @@
 							]
 						}
 					]
+				}
+			]
+		},
+		{
+			"ID": "20260917190844-hvlz04n",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20260917190844-hvlz04n",
+				"updated": "20260918195936"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "第三方主题保存在 data/themes/，图标包保存在 data/icons/，参与数据同步和快照。各设备的外观选择仍保存在本机 conf/conf.json 中；内置外观资源不参与同步。升级迁移将原目录移入数据目录，迁移后移除源副本。"
 				}
 			]
 		}

@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -18,6 +18,7 @@ package sql
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 
@@ -44,8 +45,8 @@ type Asset struct {
 
 func docTagSpans(n *ast.Node) (ret []*Span) {
 	if tagsVal := n.IALAttr("tags"); "" != tagsVal {
-		tags := strings.Split(tagsVal, ",")
-		for _, tag := range tags {
+		tags := strings.SplitSeq(tagsVal, ",")
+		for tag := range tags {
 			escaped := util.EscapeHTML(tag)
 			markdown := "#" + escaped + "#"
 			span := &Span{
@@ -100,19 +101,9 @@ func QueryAssetByHash(hash string) (ret *Asset) {
 	row := queryRow(sqlStmt, hash)
 	var asset Asset
 	if err := row.Scan(&asset.ID, &asset.BlockID, &asset.RootID, &asset.Box, &asset.DocPath, &asset.Path, &asset.Name, &asset.Title, &asset.Hash); err != nil {
-		if sql.ErrNoRows != err {
+		if !errors.Is(err, sql.ErrNoRows) {
 			logging.LogErrorf("query scan field failed: %s", err)
 		}
-		return
-	}
-	ret = &asset
-	return
-}
-
-func scanAssetRows(rows *sql.Rows) (ret *Asset) {
-	var asset Asset
-	if err := rows.Scan(&asset.ID, &asset.BlockID, &asset.RootID, &asset.Box, &asset.DocPath, &asset.Path, &asset.Name, &asset.Title, &asset.Hash); err != nil {
-		logging.LogErrorf("query scan field failed: %s", err)
 		return
 	}
 	ret = &asset

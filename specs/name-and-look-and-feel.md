@@ -29,12 +29,13 @@ The generated asset set currently includes:
 - `app/src/assets/icon.icns`
 - `app/stage/icon.png`
 - `app/stage/icon-large.png`
-- `app/appearance/boot/icon.png`
 - `app/electron/icon.png`
 - `kernel/resource/icon.ico`
 - all PNG assets under `app/appx/assets/`
 
 When the source icon changes, the generator script shall be run so desktop packaging, boot screens, tray icons, and Windows Store/AppX assets stay aligned.
+
+Upstream 3.8.8 no longer uses `app/appearance/boot/icon.png`; the generator must not recreate that obsolete output. The mobile IDs are `com.parendum.rwnotes` on Android/iOS, Android debug suffix `.debug`, iOS share extension `.ShorthandShare`, and iOS app group `group.com.parendum.rwnotes`. See [upstream-baseline.md](./upstream-baseline.md) for version alignment.
 
 ## Product Language for v0
 

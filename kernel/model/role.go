@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -16,6 +16,8 @@
 
 package model
 
+import "slices"
+
 import "github.com/gin-gonic/gin"
 
 type Role uint
@@ -32,12 +34,7 @@ const (
 )
 
 func IsValidRole(role Role, roles []Role) bool {
-	for _, role_ := range roles {
-		if role == role_ {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(roles, role)
 }
 
 func IsReadOnlyRole(role Role) bool {
@@ -47,14 +44,22 @@ func IsReadOnlyRole(role Role) bool {
 	})
 }
 
+// GetGinContextRole 返回请求角色，无上下文或无角色时按最受限的匿名访问者处理。
 func GetGinContextRole(c *gin.Context) Role {
-	if role, exists := c.Get(RoleContextKey); exists {
-		return role.(Role)
-	} else {
+	if nil == c {
 		return RoleVisitor
 	}
+	if role, exists := c.Get(RoleContextKey); exists {
+		return role.(Role)
+	}
+
+	return RoleVisitor
 }
 
 func IsAdminRoleContext(c *gin.Context) bool {
 	return GetGinContextRole(c) == RoleAdministrator
+}
+
+func IsReadOnlyRoleContext(c *gin.Context) bool {
+	return IsReadOnlyRole(GetGinContextRole(c))
 }

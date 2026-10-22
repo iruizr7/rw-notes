@@ -132,7 +132,6 @@ def generate_png_assets(base_master: Image.Image) -> None:
         ASSETS_DIR / "icon-mac.png": (512, 0.825),
         APP_DIR / "stage" / "icon.png": (512, 0.705),
         APP_DIR / "stage" / "icon-large.png": (512, 0.825),
-        APP_DIR / "appearance" / "boot" / "icon.png": (512, 0.705),
         APP_DIR / "electron" / "icon.png": (512, 0.705),
     }
     for destination, (size, scale) in padded_outputs.items():

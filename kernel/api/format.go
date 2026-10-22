@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,71 +17,52 @@
 package api
 
 import (
-	"net/http"
+	"github.com/siyuan-note/siyuan/kernel/apicontract"
 
 	"github.com/88250/gulu"
 	"github.com/gin-gonic/gin"
 	"github.com/siyuan-note/siyuan/kernel/model"
-	"github.com/siyuan-note/siyuan/kernel/util"
 )
 
-func netAssets2LocalAssets(c *gin.Context) {
+var netAssets2LocalAssets = contractHandler(apicontract.NetAssets2LocalAssets, func(c *gin.Context, request apicontract.TrimmedIDRequest) apicontract.Response[apicontract.Null] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	id := arg["id"].(string)
+	id := request.ID
 	err := model.NetAssets2LocalAssets(id, false, "")
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
+		return apicontract.FailureWithTimeout[apicontract.Null](ret.Code, ret.Msg, 5000)
 	}
-}
 
-func netImg2LocalAssets(c *gin.Context) {
+	return apicontract.Success(apicontract.Null{})
+})
+
+var netImg2LocalAssets = contractHandler(apicontract.NetImg2LocalAssets, func(c *gin.Context, request apicontract.NetImageAssetsRequest) apicontract.Response[apicontract.Null] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	id := arg["id"].(string)
-	var url string
-	if urlArg := arg["url"]; nil != urlArg {
-		url = urlArg.(string)
-	}
+	id := request.ID
+	url := request.URL
 	err := model.NetAssets2LocalAssets(id, true, url)
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
+		return apicontract.FailureWithTimeout[apicontract.Null](ret.Code, ret.Msg, 5000)
 	}
-}
 
-func autoSpace(c *gin.Context) {
+	return apicontract.Success(apicontract.Null{})
+})
+
+var autoSpace = contractHandler(apicontract.AutoSpace, func(c *gin.Context, request apicontract.TrimmedIDRequest) apicontract.Response[apicontract.Null] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	id := arg["id"].(string)
+	id := request.ID
 	err := model.AutoSpace(id)
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
+		return apicontract.FailureWithTimeout[apicontract.Null](ret.Code, ret.Msg, 5000)
 	}
-}
+
+	return apicontract.Success(apicontract.Null{})
+})

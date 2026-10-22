@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -32,24 +32,31 @@ import (
 var emojisWatcher *fsnotify.Watcher
 
 func WatchEmojis() {
-	if util.ContainerAndroid == util.Container || util.ContainerIOS == util.Container || util.ContainerHarmony == util.Container {
+	if util.IsMobileContainer() {
 		return
 	}
 
-	go func() {
-		watchEmojis()
-	}()
+	go watchEmojis()
 }
 
 func watchEmojis() {
+	CloseWatchEmojis()
 	emojisDir := filepath.Join(util.DataDir, "emojis")
-	if nil != emojisWatcher {
-		emojisWatcher.Close()
-	}
 
 	var err error
-	if emojisWatcher, err = fsnotify.NewWatcher(); err != nil {
+	emojisWatcher, err = fsnotify.NewWatcher()
+	if err != nil {
 		logging.LogErrorf("add emojis watcher for folder [%s] failed: %s", emojisDir, err)
+		return
+	}
+
+	if !gulu.File.IsDir(emojisDir) {
+		os.MkdirAll(emojisDir, 0755)
+	}
+
+	if err = emojisWatcher.Add(emojisDir); err != nil {
+		logging.LogErrorf("add emojis watcher for folder [%s] failed: %s", emojisDir, err)
+		CloseWatchEmojis()
 		return
 	}
 
@@ -77,19 +84,11 @@ func watchEmojis() {
 			}
 		}
 	}()
-
-	if !gulu.File.IsDir(emojisDir) {
-		os.MkdirAll(emojisDir, 0755)
-	}
-
-	if err = emojisWatcher.Add(emojisDir); err != nil {
-		logging.LogErrorf("add emojis watcher for folder [%s] failed: %s", emojisDir, err)
-	}
-	//logging.LogInfof("added file watcher [%s]", emojisDir)
 }
 
 func CloseWatchEmojis() {
 	if nil != emojisWatcher {
 		emojisWatcher.Close()
+		emojisWatcher = nil
 	}
 }

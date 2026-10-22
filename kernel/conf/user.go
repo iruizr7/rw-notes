@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -36,10 +36,10 @@ type User struct {
 	UserTrafficAPIGet               float64      `json:"userTrafficAPIGet"`
 	UserTrafficAPIPut               float64      `json:"userTrafficAPIPut"`
 	UserTrafficTime                 float64      `json:"userTrafficTime"`
-	UserSiYuanSubscriptionPlan      float64      `json:"userSiYuanSubscriptionPlan"`   // -1：未订阅，0：标准订阅，1：教育订阅，2：试用
+	UserSiYuanSubscriptionPlan      float64      `json:"userSiYuanSubscriptionPlan"`   // -1：未订阅，0：标准订阅，1：教育订阅，2：试用订阅
 	UserSiYuanSubscriptionStatus    float64      `json:"userSiYuanSubscriptionStatus"` // -1：未订阅，0：订阅可用，1：订阅封禁，2：订阅过期
-	UserSiYuanSubscriptionType      float64      `json:"userSiYuanSubscriptionType"`   // 0 年付；1 终生；2 月付
-	UserSiYuanOneTimePayStatus      float64      `json:"userSiYuanOneTimePayStatus"`   // 0 未付费；1 已付费
+	UserSiYuanSubscriptionType      float64      `json:"userSiYuanSubscriptionType"`   // 0 年付订阅；1 终生订阅；2 月付订阅（目前不支持）
+	UserSiYuanOneTimePayStatus      float64      `json:"userSiYuanOneTimePayStatus"`   // 0 功能特性未付费；1 功能特性已付费
 }
 
 type UserTitle struct {

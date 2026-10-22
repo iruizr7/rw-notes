@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -18,6 +18,7 @@ package treenode
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -35,10 +36,14 @@ import (
 )
 
 func NodeHash(node *ast.Node, tree *parse.Tree, luteEngine *lute.Lute) string {
-	ialArray := node.KramdownIAL
-	sort.Slice(ialArray, func(i, j int) bool {
-		return ialArray[i][0] < ialArray[j][0]
-	})
+	var ialArray [][]string
+	if 0 < len(node.KramdownIAL) {
+		ialArray = make([][]string, len(node.KramdownIAL))
+		copy(ialArray, node.KramdownIAL)
+		sort.Slice(ialArray, func(i, j int) bool {
+			return ialArray[i][0] < ialArray[j][0]
+		})
+	}
 	ial := parse.IAL2Tokens(ialArray)
 	var md string
 	if ast.NodeDocument != node.Type {
@@ -73,7 +78,7 @@ func NewTree(boxID, p, hp, title string) *parse.Tree {
 	root.SetIALAttr("id", id)
 	root.SetIALAttr("updated", util.TimeFromID(id))
 	ret := &parse.Tree{Root: root, ID: id, Box: boxID, Path: p, HPath: hp}
-	ret.Root.Spec = CurrentSpec
+	ret.Root.Spec = BaseSpec
 	newPara := &ast.Node{Type: ast.NodeParagraph, ID: ast.NewNodeID(), Box: boxID, Path: p}
 	newPara.SetIALAttr("id", newPara.ID)
 	newPara.SetIALAttr("updated", util.TimeFromID(newPara.ID))
@@ -92,6 +97,14 @@ func IALStr(n *ast.Node) string {
 
 func RootChildIDs(rootID string) (ret []string) {
 	root := GetBlockTree(rootID)
+	if nil == root {
+		for _, encBoxID := range GetOpenedEncryptedBoxIDs() {
+			if encRoot := GetBlockTreeInBox(rootID, encBoxID); nil != encRoot {
+				root = encRoot
+				break
+			}
+		}
+	}
 	if nil == root {
 		return
 	}
@@ -132,11 +145,30 @@ func ContainOnlyDefaultIAL(tree *parse.Tree) bool {
 	return 5 > len(tree.Root.KramdownIAL)
 }
 
-var CurrentSpec = "2"
+const BaseSpec = "2"
+
+var CurrentSpec = "5"
 
 var ErrSpecTooNew = fmt.Errorf("the document spec is too new")
 
+// CheckSpecJSON 在解析节点之前检查文档规范，避免未知节点被容错解析后覆盖原始内容。
+func CheckSpecJSON(data []byte) error {
+	var root struct {
+		Spec string
+	}
+	if err := json.Unmarshal(data, &root); nil != err {
+		return err
+	}
+	if err := CheckSpec(&parse.Tree{Root: &ast.Node{Spec: root.Spec}}); nil != err {
+		return err
+	}
+	return checkDocumentSpecJSON(data, root.Spec)
+}
+
 func CheckSpec(tree *parse.Tree) (err error) {
+	if err = ValidateTableCellRich(tree.Root); nil != err {
+		return
+	}
 	if CurrentSpec == tree.Root.Spec || "" == tree.Root.Spec {
 		return
 	}
@@ -145,6 +177,9 @@ func CheckSpec(tree *parse.Tree) (err error) {
 	if nil != err {
 		logging.LogErrorf("parse spec [%s] failed: %s", tree.Root.Spec, err)
 		return
+	}
+	if 1 > spec {
+		return fmt.Errorf("invalid document spec [%s]", tree.Root.Spec)
 	}
 
 	currentSpec, _ := strconv.Atoi(CurrentSpec)
@@ -156,13 +191,37 @@ func CheckSpec(tree *parse.Tree) (err error) {
 }
 
 func UpgradeSpec(tree *parse.Tree) (upgraded bool) {
-	if CurrentSpec == tree.Root.Spec {
-		return
-	}
-
+	oldSpec := tree.Root.Spec
 	upgradeSpec1(tree)
 	upgradeSpec2(tree)
-	return true
+	if "2" == tree.Root.Spec {
+		ast.Walk(tree.Root, func(node *ast.Node, entering bool) ast.WalkStatus {
+			if entering && (ast.NodeTabs == node.Type || ast.NodeTabItem == node.Type) {
+				tree.Root.Spec = "3"
+				return ast.WalkStop
+			}
+			return ast.WalkContinue
+		})
+	}
+	if "2" == tree.Root.Spec || "3" == tree.Root.Spec {
+		ast.Walk(tree.Root, func(node *ast.Node, entering bool) ast.WalkStatus {
+			if entering && nil != node.TableCellRich {
+				tree.Root.Spec = TableCellRichDocumentSpec
+				return ast.WalkStop
+			}
+			return ast.WalkContinue
+		})
+	}
+	if "2" == tree.Root.Spec || "3" == tree.Root.Spec || "4" == tree.Root.Spec {
+		ast.Walk(tree.Root, func(node *ast.Node, entering bool) ast.WalkStatus {
+			if entering && (ast.NodeMindmap == node.Type || ast.NodeMindmapItem == node.Type) {
+				tree.Root.Spec = "5"
+				return ast.WalkStop
+			}
+			return ast.WalkContinue
+		})
+	}
+	return oldSpec != tree.Root.Spec
 }
 
 func upgradeSpec2(tree *parse.Tree) {
@@ -188,5 +247,4 @@ func upgradeSpec1(tree *parse.Tree) {
 
 	parse.NestedInlines2FlattedSpans(tree, false)
 	tree.Root.Spec = "1"
-	return
 }

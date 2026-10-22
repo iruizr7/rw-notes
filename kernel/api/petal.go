@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,60 +17,65 @@
 package api
 
 import (
-	"net/http"
-
-	"github.com/88250/gulu"
 	"github.com/emirpasic/gods/sets/hashset"
 	"github.com/gin-gonic/gin"
+	"github.com/siyuan-note/siyuan/kernel/apicontract"
 	"github.com/siyuan-note/siyuan/kernel/model"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
 
-func loadPetals(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+var loadPetals = contractHandler(apicontract.LoadPetals, func(c *gin.Context, request apicontract.LoadPetalsRequest) apicontract.Response[[]*apicontract.Petal] {
+	if model.IsReadOnlyRoleContext(c) {
+		c.Header("Cache-Control", "private, no-store")
 	}
-
-	frontend := arg["frontend"].(string)
-	isPublish := model.IsReadOnlyRole(model.GetGinContextRole(c))
-
-	ret.Data = model.LoadPetals(frontend, isPublish)
-}
-
-func setPetalEnabled(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	packageName := arg["packageName"].(string)
-	enabled := arg["enabled"].(bool)
-	frontend := arg["frontend"].(string)
-	data, err := model.SetPetalEnabled(packageName, enabled, frontend)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
-	}
-
-	ret.Data = data
-
-	var app string
-	if nil != arg["app"] {
-		app = arg["app"].(string)
-	}
-	if enabled {
-		upsertPluginCodeSet := hashset.New(packageName)
-		model.PushReloadPlugin(upsertPluginCodeSet, nil, nil, nil, app)
+	var values []*model.Petal
+	if request.SettingsWindow {
+		values = model.LoadSettingsWindowPetals(request.Frontend, model.IsReadOnlyRoleContext(c))
 	} else {
-		unloadPluginSet := hashset.New(packageName)
-		model.PushReloadPlugin(nil, nil, unloadPluginSet, nil, app)
+		values = model.LoadPetals(request.Frontend, model.IsReadOnlyRoleContext(c))
 	}
-}
+	var result []*apicontract.Petal
+	if values != nil {
+		result = make([]*apicontract.Petal, len(values))
+	}
+	for i, value := range values {
+		item, err := petalContract(value)
+		if err != nil {
+			return apicontract.Failure[[]*apicontract.Petal](-1, err.Error())
+		}
+		result[i] = item
+	}
+	return apicontract.Success(result)
+})
+
+var setPetalEnabled = contractHandler(apicontract.SetPetalEnabled, func(c *gin.Context, request apicontract.SetPetalEnabledRequest) apicontract.Response[*apicontract.Petal] {
+	data, err := model.SetPetalEnabled(request.PackageName, request.Enabled)
+	if err != nil {
+		return apicontract.Failure[*apicontract.Petal](-1, err.Error())
+	}
+	if request.Enabled {
+		reloadPluginSet := hashset.New(request.PackageName)
+		model.PushReloadPlugin(nil, nil, reloadPluginSet, nil, request.App, "")
+	} else {
+		unloadPluginSet := hashset.New(request.PackageName)
+		model.PushReloadPlugin(nil, unloadPluginSet, nil, nil, request.App, "")
+	}
+	result, err := petalContract(data)
+	if err != nil {
+		return apicontract.Failure[*apicontract.Petal](-1, err.Error())
+	}
+	return apicontract.Success(result)
+})
+
+var setPetalPublishEnabled = contractHandler(apicontract.SetPetalPublishEnabled, func(c *gin.Context, request apicontract.SetPetalPublishEnabledRequest) apicontract.Response[*apicontract.Petal] {
+	data, err := model.SetPetalPublishEnabled(request.PackageName, request.Enabled)
+	if err != nil {
+		return apicontract.Failure[*apicontract.Petal](-1, err.Error())
+	}
+	util.ReloadPublishServiceSessions()
+	result, err := petalContract(data)
+	if err != nil {
+		return apicontract.Failure[*apicontract.Petal](-1, err.Error())
+	}
+	return apicontract.Success(result)
+})

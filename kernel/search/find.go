@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -71,19 +71,15 @@ func FindAllMatches(root string, targets []string) []Match {
 	var collectWg sync.WaitGroup
 
 	var matches []Match
-	collectWg.Add(1)
-	go func() {
-		defer collectWg.Done()
+	collectWg.Go(func() {
 		for m := range results {
 			matches = append(matches, m)
 		}
-	}()
+	})
 
 	numWorkers := runtime.NumCPU()
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range numWorkers {
+		wg.Go(func() {
 			for p := range jobs {
 				hits := scanFileForTargets(p, patternIndex, maxLen)
 				if len(hits) > 0 {
@@ -92,7 +88,7 @@ func FindAllMatches(root string, targets []string) []Match {
 					}
 				}
 			}
-		}()
+		})
 	}
 
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {

@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -26,37 +26,43 @@ import (
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
 
-func SearchWidget(keyword string) (ret []*Block) {
-	ret = []*Block{}
-	widgetsDir := filepath.Join(util.DataDir, "widgets")
-	entries, err := os.ReadDir(widgetsDir)
+// WidgetSearchResult 描述了挂件搜索结果。
+type WidgetSearchResult struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
+func SearchWidget(keyword string) (ret []*WidgetSearchResult) {
+	ret = []*WidgetSearchResult{}
+	widgetsDirPath := filepath.Join(util.DataDir, "widgets")
+	widgetsDir, err := os.ReadDir(widgetsDirPath)
 	if err != nil {
-		logging.LogErrorf("read dir [%s] failed: %s", widgetsDir, err)
+		logging.LogErrorf("read dir [%s] failed: %s", widgetsDirPath, err)
 		return
 	}
 
-	k := strings.ToLower(keyword)
-	var widgets []*bazaar.Widget
-	for _, entry := range entries {
-		if !util.IsDirRegularOrSymlink(entry) {
+	var widgets []*bazaar.Package
+	for _, dir := range widgetsDir {
+		if !util.IsDirRegularOrSymlink(dir) {
 			continue
 		}
-		if strings.HasPrefix(entry.Name(), ".") {
+		dirName := dir.Name()
+		if strings.HasPrefix(dirName, ".") {
 			continue
 		}
 
-		widget, _ := bazaar.WidgetJSON(entry.Name())
-		if nil == widget {
+		widget, _ := bazaar.ParsePackageJSON(filepath.Join(widgetsDirPath, dirName, "widget.json"))
+		if !bazaar.IsValidInstalledPackage(widget, dirName) {
 			continue
 		}
 
 		widgets = append(widgets, widget)
 	}
 
-	widgets = filterWidgets(widgets, k)
+	widgets = bazaar.FilterPackages(widgets, keyword)
 	for _, widget := range widgets {
-		b := &Block{
-			Name:    bazaar.GetPreferredName(widget.Package),
+		b := &WidgetSearchResult{
+			Name:    bazaar.GetPreferredLocaleString(widget.DisplayName, widget.Name),
 			Content: widget.Name,
 		}
 		ret = append(ret, b)

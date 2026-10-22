@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -16,14 +16,10 @@
 
 package conf
 
-import "github.com/88250/gulu"
-
 type API struct {
 	Token string `json:"token"`
 }
 
 func NewAPI() *API {
-	return &API{
-		Token: gulu.Rand.String(16),
-	}
+	return &API{}
 }

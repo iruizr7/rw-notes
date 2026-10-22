@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -102,13 +102,6 @@ func PinYinCompare4FileTree(str1, str2 string) bool {
 func UTF82GBK(src string) ([]byte, error) {
 	GB18030 := simplifiedchinese.All[0]
 	return io.ReadAll(transform.NewReader(bytes.NewReader([]byte(src)), GB18030.NewEncoder()))
-}
-
-// GBK2UTF8 transform GBK byte array into UTF8 string.
-func GBK2UTF8(src []byte) (string, error) {
-	GB18030 := simplifiedchinese.All[0]
-	bytes, err := io.ReadAll(transform.NewReader(bytes.NewReader(src), GB18030.NewDecoder()))
-	return string(bytes), err
 }
 
 const (

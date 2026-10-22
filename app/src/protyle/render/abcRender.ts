@@ -1,8 +1,11 @@
 import {addScript} from "../util/addScript";
+import {isFoldedRenderContent} from "./foldedContent";
 import {Constants} from "../../constants";
 import {genIconHTML} from "./util";
 import {hasClosestByClassName} from "../util/hasClosest";
 import {looseJsonParse} from "../../util/functions";
+import {getHostCapabilities} from "../../util/hostCapabilities";
+import {MERMAID_SANITIZE_OPTIONS} from "./mermaidSanitize";
 
 const ABCJS_PARAMS_KEY = "%%params";
 
@@ -25,32 +28,31 @@ const getAbcParams = (abcString: string): any => {
 };
 
 export const abcRender = (element: Element, cdn = Constants.PROTYLE_CDN) => {
-    let abcElements: Element[] = [];
-    if (element.getAttribute("data-subtype") === "abc") {
-        // 编辑器内代码块编辑渲染
+    let abcElements: Element[] | NodeListOf<Element> = [];
+    if (element.getAttribute("data-subtype") === "abc" && element.getAttribute("data-render") !== "true") {
         abcElements = [element];
     } else {
-        abcElements = Array.from(element.querySelectorAll('[data-subtype="abc"]'));
+        abcElements = element.querySelectorAll('[data-subtype="abc"]:not([data-render="true"])');
     }
+    abcElements = Array.from(abcElements).filter(item => !isFoldedRenderContent(item));
     if (abcElements.length === 0) {
         return;
     }
-    if (abcElements.length > 0) {
-        addScript(`${cdn}/js/abcjs/abcjs-basic-min.js?v=6.5.0`, "protyleAbcjsScript").then(() => {
-            const wysiwygElement = hasClosestByClassName(element, "protyle-wysiwyg", true);
-            abcElements.forEach((e: HTMLDivElement) => {
-                if (e.getAttribute("data-render") === "true") {
-                    return;
-                }
-                if (!e.firstElementChild.classList.contains("protyle-icons")) {
-                    e.insertAdjacentHTML("afterbegin", genIconHTML(wysiwygElement));
-                }
-                const renderElement = e.firstElementChild.nextElementSibling as HTMLElement;
-                renderElement.innerHTML = `<span style="position: absolute;left:0;top:0;width: 1px;">${Constants.ZWSP}</span><div contenteditable="false"></div>`;
-                const abcString = Lute.UnEscapeHTMLStr(e.getAttribute("data-content"));
-                window.ABCJS.renderAbc(renderElement.lastElementChild, abcString, getAbcParams(abcString));
-                e.setAttribute("data-render", "true");
-            });
+    addScript(`${cdn}/js/abcjs/abcjs-basic-min.js?v=6.7.1`, "protyleAbcjsScript").then(() => {
+        const wysiwygElement = hasClosestByClassName(element, "protyle-wysiwyg", true);
+        abcElements.forEach((e: HTMLDivElement) => {
+            e.setAttribute("data-render", "true");
+            if (!e.firstElementChild.classList.contains("protyle-icons")) {
+                e.insertAdjacentHTML("afterbegin", genIconHTML(wysiwygElement));
+            }
+            const renderElement = e.firstElementChild.nextElementSibling as HTMLElement;
+            renderElement.innerHTML = `<span style="position: absolute;left:0;top:0;width: 1px;">${Constants.ZWSP}</span><div contenteditable="false"></div>`;
+            const abcString = Lute.UnEscapeHTMLStr(e.getAttribute("data-content"));
+            window.ABCJS.renderAbc(renderElement.lastElementChild, abcString, getAbcParams(abcString));
+            if (getHostCapabilities().remoteKernel) {
+                renderElement.lastElementChild.innerHTML = window.DOMPurify.sanitize(
+                    renderElement.lastElementChild.innerHTML, MERMAID_SANITIZE_OPTIONS);
+            }
         });
-    }
+    });
 };

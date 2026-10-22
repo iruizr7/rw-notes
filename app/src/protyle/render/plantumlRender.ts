@@ -1,25 +1,24 @@
 import {addScript} from "../util/addScript";
+import {isFoldedRenderContent} from "./foldedContent";
 import {Constants} from "../../constants";
 import {genIconHTML} from "./util";
 import {hasClosestByClassName} from "../util/hasClosest";
 
 export const plantumlRender = (element: Element, cdn = Constants.PROTYLE_CDN) => {
-    let plantumlElements: Element[] = [];
-    if (element.getAttribute("data-subtype") === "plantuml") {
-        // 编辑器内代码块编辑渲染
+    let plantumlElements: Element[] | NodeListOf<Element> = [];
+    if (element.getAttribute("data-subtype") === "plantuml" && element.getAttribute("data-render") !== "true") {
         plantumlElements = [element];
     } else {
-        plantumlElements = Array.from(element.querySelectorAll('[data-subtype="plantuml"]'));
+        plantumlElements = element.querySelectorAll('[data-subtype="plantuml"]:not([data-render="true"])');
     }
+    plantumlElements = Array.from(plantumlElements).filter(item => !isFoldedRenderContent(item));
     if (plantumlElements.length === 0) {
         return;
     }
     addScript(`${cdn}/js/plantuml/plantuml-encoder.min.js?v=0.0.0`, "protylePlantumlScript").then(() => {
         const wysiswgElement = hasClosestByClassName(element, "protyle-wysiwyg", true);
         plantumlElements.forEach((e: HTMLDivElement) => {
-            if (e.getAttribute("data-render") === "true") {
-                return;
-            }
+            e.setAttribute("data-render", "true");
             if (!e.firstElementChild.classList.contains("protyle-icons")) {
                 e.insertAdjacentHTML("afterbegin", genIconHTML(wysiswgElement));
             }
@@ -30,16 +29,15 @@ export const plantumlRender = (element: Element, cdn = Constants.PROTYLE_CDN) =>
             }
             try {
                 const url = `${window.siyuan.config.editor.plantUMLServePath}${window.plantumlEncoder.encode(Lute.UnEscapeHTMLStr(e.getAttribute("data-content")))}`;
-                renderElement.innerHTML = `<object type="image/svg+xml" data="${url}"/>`;
+                const imageElement = document.createElement("img");
+                imageElement.src = url;
+                // 图片的双击事件由编辑器统一处理，跨域 SVG 不创建独立文档。
+                renderElement.replaceChildren(imageElement);
                 renderElement.classList.remove("ft__error");
-                renderElement.firstElementChild.addEventListener("error", () => {
-                    renderElement.innerHTML = `<img src=${url}">`;
-                });
             } catch (error) {
                 renderElement.classList.add("ft__error");
-                renderElement.innerHTML = `plantuml render error: <br>${error}`;
+                renderElement.textContent = `plantuml render error: ${error}`;
             }
-            e.setAttribute("data-render", "true");
         });
     });
 };

@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -21,18 +21,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 
+	"github.com/88250/gulu"
 	"github.com/88250/lute"
 	"github.com/88250/lute/ast"
 	"github.com/88250/lute/html"
 	"github.com/88250/lute/parse"
 	"github.com/88250/lute/render"
-	mmap "github.com/edsrzf/mmap-go"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/panjf2000/ants/v2"
 	"github.com/siyuan-note/dataparser"
@@ -50,6 +52,35 @@ func LoadTrees(ids []string) (ret map[string]*parse.Tree) {
 	}
 
 	bts := treenode.GetBlockTrees(ids)
+
+	// 全局 blocktree 未命中的 id，遍历已打开的加密笔记本查找
+	foundSet := map[string]bool{}
+	for id := range bts {
+		foundSet[id] = true
+	}
+	var missing []string
+	for _, id := range ids {
+		if !foundSet[id] {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		for _, encBoxID := range treenode.GetOpenedEncryptedBoxIDs() {
+			if len(missing) == 0 {
+				break
+			}
+			encBTs := treenode.GetBlockTreesInBox(missing, encBoxID)
+			maps.Copy(bts, encBTs)
+			var stillMissing []string
+			for _, id := range missing {
+				if _, found := encBTs[id]; !found {
+					stillMissing = append(stillMissing, id)
+				}
+			}
+			missing = stillMissing
+		}
+	}
+
 	luteEngine := util.NewLute()
 	var boxIDs []string
 	var paths []string
@@ -83,11 +114,9 @@ func LoadTrees(ids []string) (ret map[string]*parse.Tree) {
 func batchLoadTrees(boxIDs, paths []string, luteEngine *lute.Lute) (ret []*parse.Tree, errs []error) {
 	waitGroup := sync.WaitGroup{}
 	lock := sync.Mutex{}
-	poolSize := runtime.NumCPU()
-	if 8 < poolSize {
-		poolSize = 8
-	}
-	p, _ := ants.NewPoolWithFunc(poolSize, func(arg interface{}) {
+	poolSize := min(runtime.NumCPU(), 8)
+
+	p, _ := ants.NewPoolWithFunc(poolSize, func(arg any) {
 		defer waitGroup.Done()
 
 		i := arg.(int)
@@ -115,28 +144,126 @@ func batchLoadTrees(boxIDs, paths []string, luteEngine *lute.Lute) (ret []*parse
 	return
 }
 
-func LoadTree(boxID, p string, luteEngine *lute.Lute) (ret *parse.Tree, err error) {
+// ValidateBoxRelativePath 校验 box 内相对路径是否安全。
+// 拒绝 ..、绝对路径，确保最终路径位于 <DataDir>/<boxID> 内。
+// 允许路径以 / 开头（如 /20230101/xxx.sy），会自动标准化再去掉前导斜杠。
+// 根路径（"/" 或 ""）合法，返回空字符串。
+func ValidateBoxRelativePath(boxID, p string) (string, error) {
+	p = filepath.ToSlash(p)
+	// 记录原始路径用于 IsSubPath 校验
+	origP := p
+	// 标准化：去掉前导 /
+	p = strings.TrimPrefix(p, "/")
+	// 根路径直接放行（box 根目录本身是合法路径）
+	if p == "" {
+		return p, nil
+	}
+	if strings.HasPrefix(p, "..") || strings.Contains(p, "/../") || strings.HasSuffix(p, "/..") || p == ".." || p == "." {
+		return "", fmt.Errorf("path [%s] must not contain '..'", origP)
+	}
+	resolved := filepath.Join(util.DataDir, boxID, origP)
+	boxRoot := filepath.Join(util.DataDir, boxID)
+	if !gulu.File.IsSubPath(boxRoot, resolved) {
+		return "", fmt.Errorf("path [%s] escapes box directory", origP)
+	}
+	return p, nil
+}
+
+// validateTreePath 限制文档读写只访问以块 ID 命名的文档及其父目录，避免订正逻辑覆盖内部配置。
+func validateTreePath(boxID, p string) error {
+	if !ast.IsNodeIDPattern(boxID) {
+		return fmt.Errorf("invalid notebook ID [%s]", boxID)
+	}
+	rel, err := ValidateBoxRelativePath(boxID, p)
+	if err != nil {
+		return err
+	}
+	if !strings.HasSuffix(rel, ".sy") {
+		return fmt.Errorf("invalid document path [%s]", p)
+	}
+	for id := range strings.SplitSeq(strings.TrimSuffix(rel, ".sy"), "/") {
+		if !ast.IsNodeIDPattern(id) {
+			return fmt.Errorf("invalid document path [%s]", p)
+		}
+	}
+	return nil
+}
+
+func LoadTreeWithFix(boxID, p string, luteEngine *lute.Lute) (ret *parse.Tree, needFix bool, err error) {
+	if err = validateTreePath(boxID, p); err != nil {
+		logging.LogErrorf("invalid tree path [%s] for box [%s]: %s", p, boxID, err)
+		return
+	}
+
+	dek, encrypted, releaseCryptoLease, leaseErr := acquireCryptoLease(boxID)
+	if leaseErr != nil {
+		err = leaseErr
+		return
+	}
+	defer releaseCryptoLease()
+
 	rootID := util.GetTreeID(p)
-	if raw, ok := cache.GetTreeData(rootID); ok {
+	filePath := filepath.Join(util.DataDir, boxID, p)
+	if raw, ok := cache.GetTreeDataInBox(rootID, boxID); ok {
+		// 内容缓存不代表请求路径仍然有效，移动或删除后的旧路径不能触发补树。
+		if err = checkTreeFile(filePath); err != nil {
+			return
+		}
 		ret, err = LoadTreeByData(raw, boxID, p, luteEngine)
 		return
 	}
 
-	filePath := filepath.Join(util.DataDir, boxID, p)
 	data, err := filelock.ReadFile(filePath)
 	if nil != err {
-		logging.LogErrorf("load tree [%s] failed: %s", p, err)
+		if !os.IsNotExist(err) {
+			logging.LogErrorf("load tree [%s] failed: %s", p, err)
+		}
+		return
+	}
+
+	// 加密笔记本的 .sy 是密文，读盘后解密成明文供后续解析；非加密笔记本原样返回
+	if data, err = decryptDataWithDEK(boxID, p, data, dek); nil != err {
+		logging.LogErrorf("decrypt tree [%s] failed: %s", p, err)
+		return
+	}
+
+	data, needFix, err = fixTreeJSONData(boxID, p, data, luteEngine, dek, encrypted, true)
+	if nil != err {
 		return
 	}
 
 	ret, err = LoadTreeByData(data, boxID, p, luteEngine)
 	if nil == err {
-		cache.SetTreeData(rootID, data)
+		cache.SetTreeDataInBox(rootID, boxID, data)
 	}
 	return
 }
 
+func LoadTree(boxID, p string, luteEngine *lute.Lute) (ret *parse.Tree, err error) {
+	ret, _, err = LoadTreeWithFix(boxID, p, luteEngine)
+	return
+}
+
+// NormalizeTreeForRead 对只读树应用与文件加载一致的规范化处理，但不写回磁盘。
+func NormalizeTreeForRead(tree *parse.Tree) (err error) {
+	if nil == tree || nil == tree.Root {
+		return errors.New("tree is empty")
+	}
+	if err = treenode.CheckSpec(tree); nil != err {
+		return
+	}
+	if err = treenode.RefreshTableCellRichProjection(tree.Root); nil != err {
+		return
+	}
+	treenode.UpgradeSpec(tree)
+	escapeAttributeValues(tree)
+	return
+}
+
 func LoadTreeByData(data []byte, boxID, p string, luteEngine *lute.Lute) (ret *parse.Tree, err error) {
+	if err = validateTreePath(boxID, p); err != nil {
+		return
+	}
 	ret, err = parseJSON2Tree(boxID, p, data, luteEngine)
 	if nil != err {
 		logging.LogErrorf("parse tree [%s] failed: %s", p, err)
@@ -145,7 +272,14 @@ func LoadTreeByData(data []byte, boxID, p string, luteEngine *lute.Lute) (ret *p
 	ret.Path = p
 	ret.Root.Path = p
 
-	parts := strings.Split(p, "/")
+	hPath := "/" + strings.TrimPrefix(filepath.ToSlash(p), "/")
+	parts := strings.Split(hPath, "/")
+	if len(parts) < 2 {
+		logging.LogErrorf("parse tree [%s] failed: invalid path", p)
+		err = errors.New("invalid path")
+		return
+	}
+
 	parts = parts[1 : len(parts)-1] // 去掉开头的斜杆和结尾的自己
 	if 1 > len(parts) {
 		ret.HPath = "/" + ret.Root.IALAttr("title")
@@ -167,12 +301,20 @@ func LoadTreeByData(data []byte, boxID, p string, luteEngine *lute.Lute) (ret *p
 		parentPath := parentAbsPath
 		parentAbsPath = filepath.Join(util.DataDir, boxID, parentAbsPath)
 
-		parentDocIAL := DocIAL(parentAbsPath)
-		if 1 > len(parentDocIAL) {
+		parentDocIAL, parentErr := readParentDocIAL(parentAbsPath)
+		if parentErr != nil && !errors.Is(parentErr, os.ErrNotExist) {
+			return nil, parentErr
+		}
+		if errors.Is(parentErr, os.ErrNotExist) {
+			// 直接解析数据的调用也必须确认子文档仍在磁盘上，避免旧数据重建已删除的父链。
+			if err = checkTreeFile(filepath.Join(util.DataDir, boxID, p)); err != nil {
+				return nil, err
+			}
 			// 子文档缺失父文档时自动补全 https://github.com/siyuan-note/siyuan/issues/7376
 			parentTree := treenode.NewTree(boxID, parentPath, hPathBuilder.String()+"Untitled", "Untitled")
 			if _, writeErr := WriteTree(parentTree); nil != writeErr {
 				logging.LogErrorf("rebuild parent tree [%s] failed: %s", parentAbsPath, writeErr)
+				return nil, writeErr
 			} else {
 				logging.LogInfof("rebuilt parent tree [%s]", parentAbsPath)
 				treenode.UpsertBlockTree(parentTree)
@@ -185,7 +327,7 @@ func LoadTreeByData(data []byte, boxID, p string, luteEngine *lute.Lute) (ret *p
 		if "" == title {
 			title = "Untitled"
 		}
-		hPathBuilder.WriteString(util.UnescapeHTML(title))
+		hPathBuilder.WriteString(title)
 		hPathBuilder.WriteString("/")
 	}
 	hPathBuilder.WriteString(ret.Root.IALAttr("title"))
@@ -194,16 +336,129 @@ func LoadTreeByData(data []byte, boxID, p string, luteEngine *lute.Lute) (ret *p
 	return
 }
 
-func DocIAL(absPath string) (ret map[string]string) {
-	filelock.Lock(absPath)
-	file, err := os.Open(absPath)
+func checkTreeFile(absPath string) error {
+	info, err := os.Stat(absPath)
 	if err != nil {
-		logging.LogErrorf("open file [%s] failed: %s", absPath, err)
-		filelock.Unlock(absPath)
-		return nil
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("invalid document file [%s]", absPath)
+	}
+	return nil
+}
+
+// readParentDocIAL 区分父文档缺失与读取、认证、解析失败，只有缺失才允许补树。
+func readParentDocIAL(absPath string) (map[string]string, error) {
+	return readDocIAL(absPath, false)
+}
+
+func readDocIAL(absPath string, strict bool) (map[string]string, error) {
+	boxID := docIALBoxID(absPath)
+	dek, _, release, err := acquireCryptoLease(boxID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	data, err := filelock.ReadFile(absPath)
+	if err != nil {
+		return nil, err
+	}
+	relPath, err := filepath.Rel(filepath.Join(util.DataDir, boxID), absPath)
+	if err != nil {
+		return nil, err
+	}
+	data, err = decryptDataWithDEK(boxID, filepath.ToSlash(relPath), data, dek)
+	if err != nil {
+		return nil, err
+	}
+	if strict {
+		if err = treenode.CheckSpecJSON(data); err != nil {
+			return nil, err
+		}
+	}
+	var doc struct {
+		ID         string
+		Type       string
+		Properties map[string]string
+	}
+	if err = json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parse parent document [%s]: %w", absPath, err)
+	}
+	if strict && (doc.ID != util.GetTreeID(absPath) || doc.Type != "NodeDocument") {
+		return nil, fmt.Errorf("invalid document identity [%s]", absPath)
+	}
+	if len(doc.Properties) == 0 {
+		return nil, fmt.Errorf("missing parent document properties [%s]", absPath)
+	}
+	for key, value := range doc.Properties {
+		doc.Properties[key] = html.UnescapeAttrVal(value)
+	}
+	return doc.Properties, nil
+}
+
+var ErrInvalidDocIAL = errors.New("invalid document properties")
+
+func DocIAL(absPath string) (ret map[string]string, err error) {
+	// 加密笔记本的 .sy 是密文，流式 jsoniter 解析无法处理，需先整体读+解密。
+	// 反推 boxID：路径形如 <DataDir>/<boxID>/...；非加密笔记本走原流式逻辑。
+	boxID := docIALBoxID(absPath)
+	if boxID != "" && DEKProvider != nil {
+		dek, encrypted, releaseCryptoLease, leaseErr := acquireCryptoLease(boxID)
+		if leaseErr != nil {
+			return nil, leaseErr
+		}
+		defer releaseCryptoLease()
+		if encrypted {
+			// 已解锁的加密 box：整体读密文 → 解密 → 流式解析
+			// 注意：filelock.ReadFile 内部已加锁，不能在外面再 Lock/Unlock（会死锁）
+			raw, readErr := filelock.ReadFile(absPath)
+			if readErr != nil {
+				if !errors.Is(readErr, os.ErrNotExist) {
+					logging.LogErrorf("read file [%s] failed: %s", absPath, readErr)
+				}
+				return nil, readErr
+			}
+			relPath := filepath.ToSlash(strings.TrimPrefix(absPath, filepath.Join(util.DataDir, boxID)+string(os.PathSeparator)))
+			plain, decErr := decryptDataWithDEK(boxID, relPath, raw, dek)
+			if decErr != nil {
+				// 属性查询不返回未认证的数据；需要区分缺失与错误的补树流程使用 readParentDocIAL。
+				logging.LogErrorf("decrypt doc [%s] for IAL failed: %s", absPath, decErr)
+				return nil, decErr
+			}
+			return parseDocIAL(bytes.NewReader(plain))
+		}
 	}
 
-	iter := jsoniter.Parse(jsoniter.ConfigCompatibleWithStandardLibrary, file, 512)
+	filelock.Lock(absPath)
+	defer filelock.Unlock(absPath)
+	file, err := os.Open(absPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			logging.LogErrorf("open file [%s] failed: %s", absPath, err)
+		}
+		return nil, err
+	}
+	defer file.Close()
+	return parseDocIAL(file)
+}
+
+// docIALReader 保留底层读取错误，避免将临时 I/O 失败当成 JSON 损坏。
+type docIALReader struct {
+	io.Reader
+	err error
+}
+
+func (r *docIALReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if err != nil && err != io.EOF {
+		r.err = err
+	}
+	return n, err
+}
+
+func parseDocIAL(reader io.Reader) (ret map[string]string, err error) {
+	r := &docIALReader{Reader: reader}
+	iter := jsoniter.Parse(jsoniter.ConfigCompatibleWithStandardLibrary, r, 512)
 	for field := iter.ReadObject(); field != ""; field = iter.ReadObject() {
 		if field == "Properties" {
 			iter.ReadVal(&ret)
@@ -212,8 +467,16 @@ func DocIAL(absPath string) (ret map[string]string) {
 			iter.Skip()
 		}
 	}
-	file.Close()
-	filelock.Unlock(absPath)
+	if r.err != nil {
+		return nil, r.err
+	}
+	if (iter.Error != nil && iter.Error != io.EOF) || len(ret) == 0 {
+		return nil, ErrInvalidDocIAL
+	}
+
+	for k, v := range ret {
+		ret[k] = html.UnescapeAttrVal(v)
+	}
 	return
 }
 
@@ -229,18 +492,53 @@ func WriteTree(tree *parse.Tree) (size uint64, err error) {
 		return
 	}
 
-	if err = writeTreeByMmap(filePath, data); nil != err {
-		if err = writeTreeByWriteFile(filePath, data); nil != err {
+	dek, encrypted, releaseCryptoLease, leaseErr := acquireCryptoLease(tree.Box)
+	if leaseErr != nil {
+		err = leaseErr
+		return
+	}
+	defer releaseCryptoLease()
+
+	// 加密笔记本的落盘内容用密文 encData，缓存与比对仍用明文 data（缓存存明文）
+	encData, encErr := encryptDataWithDEK(tree.Box, tree.Path, data, dek)
+	if encErr != nil {
+		err = encErr
+		return
+	}
+
+	// 缓存与待写入数据一致时跳过落盘；缓存未命中时再读盘比对，避免无变更的重复写入
+	if cachedData, ok := cache.GetTreeDataInBox(tree.ID, tree.Box); ok {
+		if len(cachedData) == len(data) && bytes.Equal(cachedData, data) {
+			return
+		}
+	} else {
+		// 读盘比对：加密笔记本的磁盘数据是密文，需先解密成明文再与 data 比对
+		if diskData, readErr := filelock.ReadFile(filePath); nil == readErr {
+			decDisk, decErr := decryptDataWithDEK(tree.Box, tree.Path, diskData, dek)
+			if decErr == nil && len(decDisk) == len(data) && bytes.Equal(decDisk, data) {
+				cache.SetTreeDataInBox(tree.ID, tree.Box, data)
+				return
+			}
+		}
+	}
+
+	if encrypted {
+		// 加密密文必须通过临时文件原子替换，避免 mmap 先截断目标后崩溃导致认证密文永久损坏。
+		if err = writeTreeByWriteFile(filePath, encData); nil != err {
+			return
+		}
+	} else if err = util.WriteFileByMmap(filePath, encData); nil != err {
+		if err = writeTreeByWriteFile(filePath, encData); nil != err {
 			return
 		}
 	}
 
 	if util.ExceedLargeFileWarningSize(len(data)) {
-		msg := fmt.Sprintf(util.Langs[util.Lang][268], tree.Root.IALAttr("title")+" "+filepath.Base(filePath), util.LargeFileWarningSize)
+		msg := fmt.Sprintf(util.Langs[util.Lang][268], tree.Root.IALAttr("title")+" "+filepath.Base(filePath), util.LargeFileWarningSize.Load())
 		util.PushErrMsg(msg, 7000)
 	}
 
-	cache.SetTreeData(tree.ID, data)
+	cache.SetTreeDataInBox(tree.ID, tree.Box, data)
 	afterWriteTree(tree)
 	size = uint64(len(data))
 	return
@@ -249,40 +547,7 @@ func WriteTree(tree *parse.Tree) (size uint64, err error) {
 func writeTreeByWriteFile(filePath string, data []byte) (err error) {
 	if err = filelock.WriteFile(filePath, data); err != nil {
 		msg := fmt.Sprintf("write data [%s] failed: %s", filePath, err)
-		logging.LogErrorf(msg)
-		err = errors.New(msg)
-		return
-	}
-	return
-}
-
-func writeTreeByMmap(filePath string, data []byte) (err error) {
-	f, err := filelock.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0644)
-	if err != nil {
-		return
-	}
-	defer filelock.CloseFile(f)
-
-	if err = f.Truncate(int64(len(data))); err != nil {
-		msg := fmt.Sprintf("truncate file [%s] failed: %s", filePath, err)
-		logging.LogErrorf(msg)
-		err = errors.New(msg)
-		return
-	}
-
-	m, err := mmap.Map(f, mmap.RDWR, 0)
-	if err != nil {
-		msg := fmt.Sprintf("map file [%s] failed: %s", filePath, err)
-		logging.LogErrorf(msg)
-		err = errors.New(msg)
-		return
-	}
-	defer m.Unmap()
-
-	copy(m, data)
-	if err = m.Flush(); err != nil {
-		msg := fmt.Sprintf("flush data [%s] failed: %s", filePath, err)
-		logging.LogErrorf(msg)
+		logging.LogErrorf("%s", msg)
 		err = errors.New(msg)
 		return
 	}
@@ -290,6 +555,15 @@ func writeTreeByMmap(filePath string, data []byte) (err error) {
 }
 
 func prepareWriteTree(tree *parse.Tree) (data []byte, filePath string, err error) {
+	if err = validateTreePath(tree.Box, tree.Path); err != nil {
+		return
+	}
+	if err = treenode.SyncTableCellRichInlineChanges(tree.Root); nil != err {
+		return
+	}
+	if err = treenode.CheckSpec(tree); nil != err {
+		return
+	}
 	luteEngine := util.NewLute() // 不关注用户的自定义解析渲染选项
 
 	if nil == tree.Root.FirstChild {
@@ -299,14 +573,17 @@ func prepareWriteTree(tree *parse.Tree) (data []byte, filePath string, err error
 		treenode.UpsertBlockTree(tree)
 	}
 
+	if treenode.NormalizeTabs(tree.Root) {
+		treenode.UpsertBlockTree(tree)
+	}
 	treenode.UpgradeSpec(tree)
 
 	filePath = filepath.Join(util.DataDir, tree.Box, tree.Path)
 	tree.Root.SetIALAttr("type", "doc")
 	renderer := render.NewJSONRenderer(tree, luteEngine.RenderOptions, luteEngine.ParseOptions)
 	data = renderer.Render()
-	data = removeUnescapedUnicodeNull(data)
-	if !util.UseSingleLineSave {
+	data, _ = removeUnescapedUnicodeNull(data)
+	if !util.UseSingleLineSave.Load() {
 		buf := bytes.Buffer{}
 		buf.Grow(1024 * 1024 * 2)
 		if err = json.Indent(&buf, data, "", "\t"); err != nil {
@@ -324,30 +601,39 @@ func prepareWriteTree(tree *parse.Tree) (data []byte, filePath string, err error
 
 // removeUnescapedUnicodeNull 只移除未被转义的 `\u0000` 字面序列。
 // 判断方法：在匹配到 `\u0000` 时向前数连续的 `\` 个数，若为偶数则视为未转义并移除。
-func removeUnescapedUnicodeNull(data []byte) []byte {
+func removeUnescapedUnicodeNull(data []byte) (ret []byte, needFix bool) {
 	patLen := 6 // len(`\u0000`)
 	n := len(data)
 	if n < patLen {
-		return data
+		return data, false
+	}
+	if !bytes.Contains(data, []byte(`\u0000`)) {
+		return data, false
 	}
 
 	dst := make([]byte, 0, n)
 	i := 0
 	for i < n {
+		from := i
+		j := bytes.IndexByte(data[i:], '\\')
+		if j < 0 {
+			dst = append(dst, data[from:]...)
+			break
+		}
+		i += j
+		dst = append(dst, data[from:i]...)
+
 		// 快速检查是否可能匹配 `\u0000`
 		if i+patLen <= n &&
-			data[i] == '\\' &&
 			data[i+1] == 'u' &&
 			data[i+2] == '0' &&
 			data[i+3] == '0' &&
 			data[i+4] == '0' &&
 			data[i+5] == '0' {
 			// 统计当前 `\` 之前连续的反斜杠数量
-			j := i - 1
 			backslashes := 0
-			for j >= 0 && data[j] == '\\' {
+			for k := i - 1; k >= 0 && data[k] == '\\'; k-- {
 				backslashes++
-				j--
 			}
 			// 若为偶数，则当前 `\` 未被转义，跳过整个 `\u0000`
 			if backslashes%2 == 0 {
@@ -359,26 +645,40 @@ func removeUnescapedUnicodeNull(data []byte) []byte {
 		dst = append(dst, data[i])
 		i++
 	}
-	return dst
+	return dst, len(dst) != n
 }
 
 func afterWriteTree(tree *parse.Tree) {
-	docIAL := parse.IAL2MapUnEsc(tree.Root.KramdownIAL)
-	cache.PutDocIAL(tree.Path, docIAL)
+	docIAL := parse.IAL2Map(tree.Root.KramdownIAL)
+	cache.PutDocIALInBox(tree.Path, tree.Box, docIAL)
 }
 
-func parseJSON2Tree(boxID, p string, jsonData []byte, luteEngine *lute.Lute) (ret *parse.Tree, err error) {
-	var needFix bool
-	ret, needFix, err = dataparser.ParseJSON(jsonData, luteEngine.ParseOptions)
+// fixTreeJSONData 订正树 JSON 数据。
+func fixTreeJSONData(boxID, p string, jsonData []byte, luteEngine *lute.Lute, dek []byte, encrypted, persist bool) (data []byte, needFix bool, err error) {
+	if err = validateTreePath(boxID, p); err != nil {
+		return
+	}
+	if err = treenode.CheckSpecJSON(jsonData); nil != err {
+		return
+	}
+	jsonData, needFix = removeUnescapedUnicodeNull(jsonData)
+	ret, parseNeedFix, err := dataparser.ParseJSON(jsonData, luteEngine.ParseOptions)
+	if parseNeedFix {
+		needFix = true
+	}
 	if err != nil {
 		logging.LogErrorf("parse json [%s] to tree failed: %s", boxID+p, err)
+		err = fmt.Errorf("parse json [%s] to tree failed: %w", boxID+p, err)
 		return
 	}
 
 	ret.Box = boxID
 	ret.Path = p
 
-	if err = treenode.CheckSpec(ret); errors.Is(err, treenode.ErrSpecTooNew) {
+	if err = treenode.CheckSpec(ret); nil != err {
+		return
+	}
+	if err = treenode.RefreshTableCellRichProjection(ret.Root); nil != err {
 		return
 	}
 
@@ -386,48 +686,93 @@ func parseJSON2Tree(boxID, p string, jsonData []byte, luteEngine *lute.Lute) (re
 		needFix = true
 	}
 
-	if escapeAttributeValues(ret) { // TODO 计划于 2026 年 6 月 30 日后删除
-		// v3.5.1 https://github.com/siyuan-note/siyuan/pull/16657 引入的问题，属性值未转义
-		// v3.5.2 https://github.com/siyuan-note/siyuan/issues/16686 进行了修复，并加了订正逻辑 https://github.com/siyuan-note/siyuan/pull/16712
+	// v3.5.1 https://github.com/siyuan-note/siyuan/pull/16657 引入的问题，属性值未转义
+	// v3.5.2 https://github.com/siyuan-note/siyuan/issues/16686 进行了修复，并加了订正逻辑 https://github.com/siyuan-note/siyuan/pull/16712
+	// https://github.com/siyuan-note/siyuan/security/advisories/GHSA-ff66-236v-p4fg XSS 漏洞："title": "&amp;\" onmouseenter=\"require('child_process').exec('calc')"
+	if escapeAttributeValues(ret) {
 		needFix = true
 	}
 
 	if pathID := util.GetTreeID(p); pathID != ret.Root.ID {
+		if encrypted {
+			// 加密 .sy：基名 ID（pathID）必须与解密后的根块 ID 一致。不一致说明密文被替换、
+			// 文件名被篡改或 AAD 认证被绕过，不得静默修正——fail-closed，符合加密笔记本威胁模型。
+			err = fmt.Errorf("encrypted .sy [%s]: base id [%s] != root id [%s]", p, pathID, ret.Root.ID)
+			logging.LogErrorf("%s", err)
+			return
+		}
 		needFix = true
 		logging.LogInfof("reset tree id from [%s] to [%s]", ret.Root.ID, pathID)
 		ret.Root.ID = pathID
 		ret.ID = pathID
 		ret.Root.SetIALAttr("id", ret.ID)
 	}
+	if treenode.FixInvalidListChildren(ret.Root) {
+		needFix = true
+	}
+	if treenode.NormalizeTabs(ret.Root) {
+		needFix = true
+	}
 
-	if needFix {
-		renderer := render.NewJSONRenderer(ret, luteEngine.RenderOptions, luteEngine.ParseOptions)
-		data := renderer.Render()
+	if !needFix {
+		return jsonData, false, nil
+	}
 
-		if !util.UseSingleLineSave {
-			buf := bytes.Buffer{}
-			buf.Grow(1024 * 1024 * 2)
-			if err = json.Indent(&buf, data, "", "\t"); err != nil {
-				return
-			}
-			data = buf.Bytes()
-		}
+	renderer := render.NewJSONRenderer(ret, luteEngine.RenderOptions, luteEngine.ParseOptions)
+	data = renderer.Render()
 
-		filePath := filepath.Join(util.DataDir, ret.Box, ret.Path)
-		if err = os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+	if !util.UseSingleLineSave.Load() {
+		buf := bytes.Buffer{}
+		buf.Grow(1024 * 1024 * 2)
+		if err = json.Indent(&buf, data, "", "\t"); err != nil {
 			return
 		}
-		if err = filelock.WriteFile(filePath, data); err != nil {
-			msg := fmt.Sprintf("write data [%s] failed: %s", filePath, err)
-			logging.LogErrorf(msg)
-		}
+		data = buf.Bytes()
 	}
+
+	if !persist {
+		return
+	}
+	filePath := filepath.Join(util.DataDir, ret.Box, ret.Path)
+	if err = os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+		return
+	}
+	// 订正后的 data 是明文，加密笔记本落盘前需加密
+	encData, encErr := encryptDataWithDEK(ret.Box, ret.Path, data, dek)
+	if encErr != nil {
+		err = encErr
+		return
+	}
+	if err = filelock.WriteFile(filePath, encData); err != nil {
+		logging.LogErrorf("write data [%s] failed: %s", filePath, err)
+	}
+	return
+}
+
+func parseJSON2Tree(boxID, p string, jsonData []byte, luteEngine *lute.Lute) (ret *parse.Tree, err error) {
+	if err = treenode.CheckSpecJSON(jsonData); nil != err {
+		return
+	}
+	ret, _, err = dataparser.ParseJSON(jsonData, luteEngine.ParseOptions)
+	if err != nil {
+		logging.LogErrorf("parse json [%s] to tree failed: %s", boxID+p, err)
+		err = fmt.Errorf("parse json [%s] to tree failed: %w", boxID+p, err)
+		return
+	}
+
+	ret.Box = boxID
+	ret.Path = p
+
+	if err = treenode.CheckSpec(ret); nil != err {
+		return
+	}
+	err = treenode.RefreshTableCellRichProjection(ret.Root)
 	return
 }
 
 // escapeAttributeValues 转义属性值
 func escapeAttributeValues(tree *parse.Tree) (hasEscaped bool) {
-	if util.ReadOnly || nil == tree || nil == tree.Root {
+	if nil == tree || nil == tree.Root {
 		return false
 	}
 
@@ -451,35 +796,12 @@ func escapeNodeAttributeValues(node *ast.Node) (escaped bool) {
 	}
 
 	for _, kv := range node.KramdownIAL {
-		if value := kv[1]; needsEscapeForValue(value) {
-			kv[1] = html.EscapeAttrVal(value)
+		// 解码再编码后发生变化则说明未正确转义或存在恶意拼接，需要订正
+		canonical := html.EscapeAttrVal(html.UnescapeAttrVal(kv[1]))
+		if canonical != kv[1] {
+			kv[1] = canonical
 			escaped = true
 		}
 	}
 	return
-}
-
-// needsEscapeForValue 检查值是否需要转义（包含需要转义的特殊字符但尚未被转义）
-func needsEscapeForValue(value string) bool {
-	hasSpecialChars := false
-	for _, char := range value {
-		switch char {
-		case '<', '>', '&', '"', '{', '}':
-			hasSpecialChars = true
-		}
-		if hasSpecialChars {
-			break
-		}
-	}
-	if !hasSpecialChars {
-		return false
-	}
-
-	entities := []string{"&quot;", "&#123;", "&#125;", "&amp;", "&lt;", "&gt;"}
-	for _, entity := range entities {
-		if strings.Contains(value, entity) {
-			return false
-		}
-	}
-	return true
 }

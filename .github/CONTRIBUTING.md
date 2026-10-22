@@ -1,4 +1,5 @@
-[中文](https://github.com/siyuan-note/siyuan/blob/master/.github/CONTRIBUTING_zh_CN.md)
+**English**
+| [中文](CONTRIBUTING.zh-CN.md)
 
 ## Get the source code
 
@@ -7,17 +8,23 @@
 
 ## NPM dependencies
 
-Install pnpm: `npm install -g pnpm@10.30.1`
+Electron 44 requires macOS 13 or later and supports only 64-bit Windows and Linux builds.
+
+Install Node.js 24 to match CI, then install pnpm using npm: `npm install -g pnpm@12.5.1`.
+
+Use the version specified by the `packageManager` field in [`app/package.json`](../app/package.json); update the version in the command above if that field changes. This uses the same installation method as [CI](workflows/cd.yml).
+
+Do not mix this method with pnpm's standalone installation scripts (`@pnpm/exe`). Different pnpm distributions can change the `packageManagerDependencies` metadata in `app/pnpm-lock.yaml`, causing unrelated lockfile changes. If you previously installed standalone pnpm, remove it from `PATH` or uninstall it so that the npm-installed pnpm takes precedence. Before installing dependencies, check `pnpm --version` against `packageManager` and locate the executable with `where.exe pnpm` on Windows or `command -v pnpm` on macOS/Linux. Review lockfile changes before committing and exclude metadata-only changes caused by switching installation methods.
 
 <details>
 <summary>For China mainland</summary>
 
 Set the Electron mirror environment variable and install Electron:
 
-* macOS/Linux: `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ pnpm install electron@39.6.1 -D`
+* macOS/Linux: `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ pnpm install electron@44.9.0 -D`
 * Windows:
   * `SET ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`
-  * `pnpm install electron@39.6.1 -D`
+  * `pnpm install electron@44.9.0 -D`
 
 NPM mirror:
 
@@ -27,9 +34,12 @@ NPM mirror:
 
 Enter the app folder and execute:
 
-* `pnpm install electron@39.6.1 -D`
+* `pnpm install electron@44.9.0 -D`
+* `pnpm run install:electron`
 * `pnpm run dev`
 * `pnpm run start`
+
+Note: Electron 42 no longer downloads its binary automatically during `pnpm install`. Run `pnpm run install:electron` (or set `ELECTRON_MIRROR` first on China mainland) to fetch the binary before `pnpm run start`.
 
 Note: In the development environment, the kernel process will not be automatically started, and you need to manually start the kernel process first.
 
@@ -37,27 +47,42 @@ Note: In the development environment, the kernel process will not be automatical
 
 1. Install the latest version of [golang](https://go.dev/)
 2. Open CGO support, that is, configure the environment variable `CGO_ENABLED=1`
+3. On Windows, add the directory reported by `go env GOBIN` to `PATH`; if it is empty, add the `bin` subdirectory of `go env GOPATH`
 
 ### Desktop
 
 * `cd kernel`
-* Windows: `go build --tags "fts5" -o "../app/kernel/SiYuan-Kernel.exe"`
-* Linux/macOS: `go build --tags "fts5" -o "../app/kernel/SiYuan-Kernel"`
+* Windows:
+  * `go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest`
+  * `goversioninfo -platform-specific=true -icon=resource/icon.ico -manifest=resource/goversioninfo.exe.manifest`
+  * `go build -tags "fts5 sqlcipher" -o "../app/kernel/SiYuan-Kernel.exe"`
+* Linux/macOS: `go build -tags "fts5 sqlcipher" -o "../app/kernel/SiYuan-Kernel"`
 * `cd ../app/kernel`
-* Windows: `./SiYuan-Kernel.exe --wd=.. --mode=dev`
-* Linux/macOS: `./SiYuan-Kernel --wd=.. --mode=dev`
+* Windows: `./SiYuan-Kernel.exe serve --mode=dev`
+* Linux/macOS: `./SiYuan-Kernel serve --mode=dev`
+
+The optional global `--home-dir <path>` flag sets the base directory for user configuration. Files such as the workspace registry and cookie key remain under `<path>/.config/siyuan/`. Relative paths are resolved against the current process directory, and missing configuration directories are created. Invalid or unwritable paths fail without falling back to the system user home. Omitting the flag preserves the existing behavior. The flag also applies to offline CLI commands such as `workspace list`.
+
+Use `--workspace` for notebook data and `--wd` for application resources independently. For example, after creating an empty `/work/siyuan-workspace` directory: `./SiYuan-Kernel serve --mode=dev --home-dir=/work/siyuan-home --workspace=/work/siyuan-workspace --wd=/work/siyuan/app`. When starting the server without an explicit workspace or a registered workspace in the selected profile, the default workspace remains under the selected home directory using the platform's existing layout (`SiYuan` on Windows/Linux, `Library/Application Support/SiYuan` on macOS). When `--home-dir` is set on Windows, `USERPROFILE` does not override it. These options do not change the mobile app's sandbox paths.
+
+### Desktop OCR packaging prerequisites
+
+Desktop packaging runs `scripts/prepare-ocr.py` to prepare the pinned models and native runtime. Run `python scripts/prepare-ocr.py --runtime windows-amd64 --check-only` or `python3 scripts/prepare-ocr.py --runtime linux-arm64 --build-worker --check-only` to check native prerequisites without downloading assets or compiling anything.
+
+* Windows: the release builder must have redistribution rights under its Visual Studio license and the matching x64/ARM64 **release** CRT files from `VC/Redist/MSVC`. The script discovers installed Visual Studio through `vswhere` or `VCToolsRedistDir`. Set `SIYUAN_OCR_VC_REDIST_DIR` to `VC/Redist/MSVC/<version>` (containing `x64` and/or `arm64`) or the target's `Microsoft.VC*.CRT` directory for a custom location or cross-host packaging. Use official Visual Studio redist files, not DLLs copied from `System32`, debug runtimes, or third-party DLL download sites. The preparation step checks architecture and required exports, bundles the transitive CRT dependencies beside ONNX Runtime, and records their SHA-256 digests and licensing notice. Keep this app-local runtime updated when preparing releases. See Microsoft's [redistribution terms](https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution#visual-c-runtime-files). It does not install system-wide runtimes or require elevation on end-user machines
+* Linux: the desktop OCR worker targets **glibc 2.28** on both AMD64 and ARM64, independently of the kernel's musl toolchain. The preparation script downloads the pinned Zig compiler from `scripts/ocr-assets.json`, verifies its checksum, and caches it in `.cache/ocr/`; the compiler is not distributed in the application. Install `binutils` for the `readelf` compatibility check. Optional `SIYUAN_OCR_CC_AMD64` and `SIYUAN_OCR_CC_ARM64` overrides select compiler commands with a glibc 2.28 or older sysroot; newer headers and artifacts requiring newer glibc symbols are rejected. `--check-only` validates the default toolchain selection without downloading it. Docker uses its separate Alpine/musl OCR build and is unchanged
 
 ### iOS
 
 * `cd kernel`
-* `gomobile bind --tags fts5 -ldflags '-s -w' -v -o ./ios/iosk.xcframework -target=ios ./mobile/`
+* `gomobile bind -tags "fts5 sqlcipher" -ldflags '-s -w' -v -o ./ios/iosk.xcframework -target=ios ./mobile/`
 * https://github.com/siyuan-note/siyuan-ios
 
 ### Android
 
 * `cd kernel`
 * `set JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8`
-* `gomobile bind --tags fts5 -ldflags "-s -w"  -v -o kernel.aar -target=android/arm64 -androidapi 26 ./mobile/`
+* `gomobile bind -tags "fts5 sqlcipher" -ldflags "-s -w"  -v -o kernel.aar -target android/arm64 -androidapi 26 ./mobile/`
 * https://github.com/siyuan-note/siyuan-android
 
 ### Harmony
@@ -88,3 +113,9 @@ Modify Go source code:
    `C.size_t(len(b))` to `C.socklen_t(len(b))`
 
 For other details, please refer to https://github.com/siyuan-note/siyuan/issues/13184
+
+## Issue workflow
+
+* Issues and pull requests that have been closed with no activity for 30 days are locked automatically to keep the tracker focused on open work
+* If you run into a problem similar to a locked one, please open a new issue and link back to the original — avoid replying on old, closed threads, as that revives stale context and pings everyone who participated
+* A new issue with a clear reproduction and a reference to the closed one is far easier to act on than a comment appended to a months-old thread

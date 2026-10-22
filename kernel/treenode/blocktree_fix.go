@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -36,7 +36,7 @@ func getRedundantPaths(boxID string, paths []string) (ret []string) {
 
 	btPathsMap := map[string]bool{}
 	sqlStmt := "SELECT path FROM blocktrees WHERE box_id = ?"
-	rows, err := db.Query(sqlStmt, boxID)
+	rows, err := queryForBox(boxID, sqlStmt, boxID)
 	if err != nil {
 		logging.LogErrorf("query block tree failed: %s", err)
 		return
@@ -51,7 +51,7 @@ func getRedundantPaths(boxID string, paths []string) (ret []string) {
 		btPathsMap[path] = true
 	}
 
-	for p, _ := range btPathsMap {
+	for p := range btPathsMap {
 		if !pathsMap[p] {
 			ret = append(ret, p)
 		}
@@ -62,7 +62,7 @@ func getRedundantPaths(boxID string, paths []string) (ret []string) {
 
 func removeBlockTreesByPath(boxID, path string) {
 	sqlStmt := "DELETE FROM blocktrees WHERE box_id = ? AND path = ?"
-	_, err := db.Exec(sqlStmt, boxID, path)
+	_, err := execForBox(boxID, sqlStmt, boxID, path)
 	if err != nil {
 		logging.LogErrorf("delete block tree failed: %s", err)
 	}
@@ -76,7 +76,7 @@ func GetNotExistPaths(boxID string, paths []string) (ret []string) {
 
 	btPathsMap := map[string]bool{}
 	sqlStmt := "SELECT path FROM blocktrees WHERE box_id = ?"
-	rows, err := db.Query(sqlStmt, boxID)
+	rows, err := queryForBox(boxID, sqlStmt, boxID)
 	if err != nil {
 		logging.LogErrorf("query block tree failed: %s", err)
 		return
@@ -91,7 +91,7 @@ func GetNotExistPaths(boxID string, paths []string) (ret []string) {
 		btPathsMap[path] = true
 	}
 
-	for p, _ := range pathsMap {
+	for p := range pathsMap {
 		if !btPathsMap[p] {
 			ret = append(ret, p)
 		}
@@ -116,6 +116,9 @@ func GetRootUpdated() (ret map[string]string) {
 			return
 		}
 		ret[rootID] = updated
+	}
+	if err = rows.Err(); err != nil {
+		logging.LogErrorf("iterate block tree failed: %s", err)
 	}
 	return
 }

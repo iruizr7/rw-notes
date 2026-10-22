@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,7 +17,10 @@
 package api
 
 import (
-	"net/http"
+	"encoding/json"
+	"github.com/siyuan-note/siyuan/kernel/apicontract"
+	"slices"
+	"strings"
 
 	"github.com/88250/gulu"
 	"github.com/gin-gonic/gin"
@@ -25,308 +28,368 @@ import (
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
 
-func getRecentDocs(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var getLocalStorage = contractHandler(apicontract.GetLocalStorage, func(c *gin.Context, request apicontract.EmptyRequest) apicontract.Response[map[string]apicontract.JSONValue] {
 
-	// 获取排序参数
-	sortBy := "viewedAt" // 默认按浏览时间排序，openAt：按打开时间排序，closedAt：按关闭时间排序
-
-	// 兼容旧版接口，不能直接使用 util.JsonArg()
-	arg := map[string]interface{}{}
-	if err := c.ShouldBindJSON(&arg); err == nil {
-		if arg["sortBy"] != nil {
-			sortBy = arg["sortBy"].(string)
-		}
+	data := model.GetLocalStorage()
+	if model.IsReadOnlyRoleContext(c) {
+		data = model.FilterLocalStorageByPublishAccess(data)
 	}
+	return storageContract(data)
+})
 
-	data, err := model.GetRecentDocs(sortBy)
+var getLocalStorageVal = contractHandler(apicontract.GetLocalStorageVal, func(c *gin.Context, request apicontract.StorageKeyRequest) apicontract.Response[apicontract.JSONValue] {
+
+	key := request.Key
+	data := model.GetLocalStorage()
+	if model.IsReadOnlyRoleContext(c) {
+		data = model.FilterLocalStorageByPublishAccess(data)
+	}
+	serialized, err := json.Marshal(data[key])
+	if err != nil {
+		return apicontract.Failure[apicontract.JSONValue](-1, err.Error())
+	}
+	var value apicontract.JSONValue
+	if err = json.Unmarshal(serialized, &value); err != nil {
+		return apicontract.Failure[apicontract.JSONValue](-1, err.Error())
+	}
+	return apicontract.Success(value)
+})
+
+var getLocalStorageVals = contractHandler(apicontract.GetLocalStorageVals, func(c *gin.Context, request apicontract.StorageKeysRequest) apicontract.Response[map[string]apicontract.JSONValue] {
+
+	keys := request.Keys
+	if len(keys) == 0 {
+		return apicontract.Failure[map[string]apicontract.JSONValue](-1, "Field [keys] must not be empty")
+	}
+	if slices.Contains(keys, "") {
+		return apicontract.Failure[map[string]apicontract.JSONValue](-1, "Field [keys]: each element must not be empty")
+	}
+	data := model.GetLocalStorage()
+	if model.IsReadOnlyRoleContext(c) {
+		data = model.FilterLocalStorageByPublishAccess(data)
+	}
+	out := map[string]any{}
+	for _, k := range keys {
+		out[k] = data[k]
+	}
+	return storageContract(out)
+})
+
+var setLocalStorageVal = contractHandler(apicontract.SetLocalStorageVal, func(c *gin.Context, request apicontract.StorageSetRequest) apicontract.Response[apicontract.Null] {
+	ret := gulu.Ret.NewResult()
+
+	key, app := request.Key, request.App
+	input, err := storageModelValues(map[string]apicontract.JSONValue{key: request.Val})
+	if err != nil {
+		return apicontract.Failure[apicontract.Null](-1, err.Error())
+	}
+	val := input[key]
+	setKeyVals, err := model.SetLocalStorageVals(map[string]any{key: val})
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
-	ret.Data = data
-}
 
-func removeCriterion(c *gin.Context) {
+	evt := util.NewCmdResult("setLocalStorageVal", 0, util.PushModeBroadcastMainExcludeSelfApp)
+	evt.AppId = app
+	evt.Data = map[string]any{"key": key, "val": setKeyVals[key]}
+	util.PushEvent(evt)
+
+	return apicontract.Success(apicontract.Null{})
+})
+
+var setLocalStorageVals = contractHandler(apicontract.SetLocalStorageVals, func(c *gin.Context, request apicontract.StorageSetKeysRequest) apicontract.Response[apicontract.Null] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	app := request.App
+	if len(request.KeyVals) == 0 {
+		return apicontract.Failure[apicontract.Null](-1, "Field [keyVals] must not be empty")
 	}
-
-	name := arg["name"].(string)
-	err := model.RemoveCriterion(name)
+	keyVals, err := storageModelValues(request.KeyVals)
+	if err != nil {
+		return apicontract.Failure[apicontract.Null](-1, err.Error())
+	}
+	setKeyVals, err := model.SetLocalStorageVals(keyVals)
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
-}
 
-func setCriterion(c *gin.Context) {
+	evtSet := util.NewCmdResult("setLocalStorageVals", 0, util.PushModeBroadcastMainExcludeSelfApp)
+	evtSet.AppId = app
+	evtSet.Data = map[string]any{"keyVals": setKeyVals}
+	util.PushEvent(evtSet)
+
+	return apicontract.Success(apicontract.Null{})
+})
+
+var removeLocalStorageVal = contractHandler(apicontract.RemoveLocalStorageVal, func(c *gin.Context, request apicontract.StorageRemoveRequest) apicontract.Response[apicontract.Null] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	param, err := gulu.JSON.MarshalJSON(arg["criterion"])
+	key, app := request.Key, request.App
+	err := model.RemoveLocalStorageVals([]string{key})
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
 
-	criterion := &model.Criterion{}
-	if err = gulu.JSON.UnmarshalJSON(param, criterion); err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
-	}
+	evt := util.NewCmdResult("removeLocalStorageVal", 0, util.PushModeBroadcastMainExcludeSelfApp)
+	evt.AppId = app
+	evt.Data = map[string]any{"key": key}
+	util.PushEvent(evt)
 
-	err = model.SetCriterion(criterion)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
-	}
-}
+	return apicontract.Success(apicontract.Null{})
+})
 
-func getCriteria(c *gin.Context) {
+var removeLocalStorageVals = contractHandler(apicontract.RemoveLocalStorageVals, func(c *gin.Context, request apicontract.StorageRemoveKeysRequest) apicontract.Response[apicontract.Null] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	data := model.GetCriteria()
-	ret.Data = data
-}
-
-func removeLocalStorageVals(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	keys := request.Keys
+	if len(keys) == 0 {
+		return apicontract.Failure[apicontract.Null](-1, "Field [keys] must not be empty")
 	}
-
-	var keys []string
-	keysArg := arg["keys"].([]interface{})
-	for _, key := range keysArg {
-		keys = append(keys, key.(string))
+	if slices.Contains(keys, "") {
+		return apicontract.Failure[apicontract.Null](-1, "Field [keys]: each element must not be empty")
 	}
-
+	app := request.App
 	err := model.RemoveLocalStorageVals(keys)
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
 
-	app := arg["app"].(string)
 	evt := util.NewCmdResult("removeLocalStorageVals", 0, util.PushModeBroadcastMainExcludeSelfApp)
 	evt.AppId = app
-	evt.Data = map[string]interface{}{"keys": keys}
+	evt.Data = map[string]any{"keys": keys}
 	util.PushEvent(evt)
-}
 
-func setLocalStorageVal(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+	return apicontract.Success(apicontract.Null{})
+})
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+var getCriteria = contractHandler(apicontract.GetCriteria, func(c *gin.Context, request apicontract.EmptyRequest) apicontract.Response[[]*apicontract.Criterion] {
+
+	data := model.GetCriteria()
+	if model.IsReadOnlyRoleContext(c) {
+		publishAccess := model.GetPublishAccess()
+		data = model.FilterCriteriaByPublishAccess(c, publishAccess, data)
 	}
+	return apicontract.Success(criterionContracts(data))
+})
 
-	key := arg["key"].(string)
-	val := arg["val"].(interface{})
-	err := model.SetLocalStorageVal(key, val)
+var setCriterion = contractHandler(apicontract.SetCriterion, func(c *gin.Context, request apicontract.SetCriterionRequest) apicontract.Response[apicontract.Null] {
+	ret := gulu.Ret.NewResult()
+
+	if request.Criterion == nil {
+		return apicontract.Failure[apicontract.Null](-1, "Field [criterion] is required")
+	}
+	criterion := criterionModel(*request.Criterion)
+	err := model.SetCriterion(criterion)
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
 
-	app := arg["app"].(string)
-	evt := util.NewCmdResult("setLocalStorageVal", 0, util.PushModeBroadcastMainExcludeSelfApp)
-	evt.AppId = app
-	evt.Data = map[string]interface{}{"key": key, "val": val}
-	util.PushEvent(evt)
-}
+	return apicontract.Success(apicontract.Null{})
+})
 
-func setLocalStorage(c *gin.Context) {
+var removeCriterion = contractHandler(apicontract.RemoveCriterion, func(c *gin.Context, request apicontract.RemoveCriterionRequest) apicontract.Response[apicontract.Null] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	val := arg["val"].(interface{})
-	err := model.SetLocalStorage(val)
+	name := request.Name
+	err := model.RemoveCriterion(name)
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		return
-	}
-}
-
-func getLocalStorage(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	data := model.GetLocalStorage()
-	ret.Data = data
-}
-
-func getOutlineStorage(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
 
-	docID := arg["docID"].(string)
-	data, err := model.GetOutlineStorage(docID)
+	return apicontract.Success(apicontract.Null{})
+})
+
+var getRecentDocs = contractHandler(apicontract.GetRecentDocs, func(c *gin.Context, request apicontract.RecentDocsRequest) apicontract.Response[[]*apicontract.RecentDoc] {
+	ret := gulu.Ret.NewResult()
+
+	sortBy := request.SortBy
+	data, err := model.GetRecentDocs(sortBy)
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		return
+		return contractFailure[[]*apicontract.RecentDoc](ret)
 	}
-	ret.Data = data
-}
+	if model.IsReadOnlyRoleContext(c) {
+		publishAccess := model.GetPublishAccess()
+		data = model.FilterRecentDocsByPublishAccess(c, publishAccess, data)
+	}
+	return apicontract.Success(recentDocContracts(data))
+})
 
-func setOutlineStorage(c *gin.Context) {
+var updateRecentDocOpenTime = contractHandler(apicontract.UpdateRecentDocOpenTime, func(c *gin.Context, request apicontract.RecentDocUpdateRequest) apicontract.Response[apicontract.Null] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	rootID := request.RootID
+	if "" == rootID {
+		return contractFailure[apicontract.Null](ret)
 	}
 
-	docID := arg["docID"].(string)
-	val := arg["val"].(interface{})
-	err := model.SetOutlineStorage(docID, val)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
-	}
-}
-
-func removeOutlineStorage(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	docID := arg["docID"].(string)
-	err := model.RemoveOutlineStorage(docID)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
-	}
-}
-
-func updateRecentDocViewTime(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	if nil == arg["rootID"] {
-		return
-	}
-
-	rootID := arg["rootID"].(string)
-	err := model.UpdateRecentDocViewTime(rootID)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
-	}
-}
-
-func updateRecentDocOpenTime(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	if nil == arg["rootID"] {
-		return
-	}
-
-	rootID := arg["rootID"].(string)
 	err := model.UpdateRecentDocOpenTime(rootID)
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
-}
 
-func updateRecentDocCloseTime(c *gin.Context) {
+	return apicontract.Success(apicontract.Null{})
+}, skipReadonlyStorageMutation)
+
+var updateRecentDocViewTime = contractHandler(apicontract.UpdateRecentDocViewTime, func(c *gin.Context, request apicontract.RecentDocUpdateRequest) apicontract.Response[apicontract.Null] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	rootID := request.RootID
+	if "" == rootID {
+		return contractFailure[apicontract.Null](ret)
 	}
 
-	rootID, ok := arg["rootID"].(string)
-	if !ok || rootID == "" {
-		return
+	err := model.UpdateRecentDocViewTime(rootID)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return contractFailure[apicontract.Null](ret)
+	}
+
+	return apicontract.Success(apicontract.Null{})
+}, skipReadonlyStorageMutation)
+
+var updateRecentDocCloseTime = contractHandler(apicontract.UpdateRecentDocCloseTime, func(c *gin.Context, request apicontract.RecentDocUpdateRequest) apicontract.Response[apicontract.Null] {
+	ret := gulu.Ret.NewResult()
+
+	rootID := request.RootID
+	if "" == rootID {
+		return contractFailure[apicontract.Null](ret)
 	}
 
 	err := model.UpdateRecentDocCloseTime(rootID)
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
-}
 
-func batchUpdateRecentDocCloseTime(c *gin.Context) {
+	return apicontract.Success(apicontract.Null{})
+}, skipReadonlyStorageMutation)
+
+var batchUpdateRecentDocCloseTime = contractHandler(apicontract.BatchUpdateRecentDocCloseTime, func(c *gin.Context, request apicontract.RecentDocsUpdateRequest) apicontract.Response[apicontract.Null] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	rootIDsArg := arg["rootIDs"].([]interface{})
-	var rootIDs []string
-	for _, id := range rootIDsArg {
-		rootIDs = append(rootIDs, id.(string))
+	rootIDs := request.RootIDs
+	if 0 == len(rootIDs) {
+		return contractFailure[apicontract.Null](ret)
 	}
 
 	err := model.BatchUpdateRecentDocCloseTime(rootIDs)
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
-}
+
+	return apicontract.Success(apicontract.Null{})
+}, skipReadonlyStorageMutation)
+
+var getOutlineStorage = contractHandler(apicontract.GetOutlineStorage, func(c *gin.Context, request apicontract.OutlineStorageRequest) apicontract.Response[map[string]apicontract.JSONValue] {
+	ret := gulu.Ret.NewResult()
+
+	docID := request.DocID
+
+	data, err := model.GetOutlineStorage(docID)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return contractFailure[map[string]apicontract.JSONValue](ret)
+	}
+	return storageContract(data)
+})
+
+var setOutlineStorage = contractHandler(apicontract.SetOutlineStorage, func(c *gin.Context, request apicontract.OutlineStorageSetRequest) apicontract.Response[apicontract.Null] {
+	ret := gulu.Ret.NewResult()
+
+	docID := request.DocID
+	val, err := storageModelValues(request.Val)
+	if err != nil {
+		return apicontract.Failure[apicontract.Null](-1, err.Error())
+	}
+	err = model.SetOutlineStorage(docID, val)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return contractFailure[apicontract.Null](ret)
+	}
+
+	return apicontract.Success(apicontract.Null{})
+})
+
+var removeOutlineStorage = contractHandler(apicontract.RemoveOutlineStorage, func(c *gin.Context, request apicontract.OutlineStorageRequest) apicontract.Response[apicontract.Null] {
+	ret := gulu.Ret.NewResult()
+
+	docID := request.DocID
+
+	err := model.RemoveOutlineStorage(docID)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return contractFailure[apicontract.Null](ret)
+	}
+
+	return apicontract.Success(apicontract.Null{})
+})
+
+var getViewState = contractHandler(apicontract.GetViewState, func(c *gin.Context, request apicontract.StorageKeyRequest) apicontract.Response[map[string]apicontract.JSONValue] {
+	ret := gulu.Ret.NewResult()
+
+	key := request.Key
+	data, err := model.GetViewState(key)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return contractFailure[map[string]apicontract.JSONValue](ret)
+	}
+	return storageContract(data)
+})
+
+var patchViewState = contractHandler(apicontract.PatchViewState, func(c *gin.Context, request apicontract.ViewStatePatchRequest) apicontract.Response[map[string]apicontract.JSONValue] {
+	ret := gulu.Ret.NewResult()
+
+	key, removeKeys := request.Key, request.RemoveKeys
+	for _, key := range removeKeys {
+		if strings.TrimSpace(key) == "" {
+			return apicontract.Failure[map[string]apicontract.JSONValue](-1, "Field [removeKeys]: each element should be a non-empty String")
+		}
+	}
+	values, err := storageModelValues(request.Values)
+	if err != nil {
+		return apicontract.Failure[map[string]apicontract.JSONValue](-1, err.Error())
+	}
+	data, err := model.PatchViewState(key, values, removeKeys)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return contractFailure[map[string]apicontract.JSONValue](ret)
+	}
+	return storageContract(data)
+})
+
+var removeViewState = contractHandler(apicontract.RemoveViewState, func(c *gin.Context, request apicontract.StorageKeyRequest) apicontract.Response[apicontract.Null] {
+	ret := gulu.Ret.NewResult()
+
+	key := request.Key
+	if err := model.RemoveViewState(key); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+	}
+
+	return contractFailure[apicontract.Null](ret)
+})

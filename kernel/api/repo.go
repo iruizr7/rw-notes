@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,457 +17,451 @@
 package api
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"mime"
-	"net/http"
+	"os"
 	"path/filepath"
 
 	"github.com/88250/gulu"
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/gin-gonic/gin"
+	"github.com/siyuan-note/dejavu"
+	"github.com/siyuan-note/dejavu/entity"
+	"github.com/siyuan-note/siyuan/kernel/apicontract"
+	"github.com/siyuan-note/siyuan/kernel/conf"
 	"github.com/siyuan-note/siyuan/kernel/model"
+	"github.com/siyuan-note/siyuan/kernel/treenode"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
 
-func setRepoIndexRetentionDays(c *gin.Context) {
+var setRepoIndexRetentionDays = contractHandler(apicontract.SetRepoIndexRetentionDays, func(c *gin.Context, request apicontract.SetRepoIndexRetentionDaysRequest) apicontract.Response[apicontract.Null] {
+	daysInt := int(request.Days)
+	if 1 > daysInt {
+		daysInt = 180
+	}
+
+	model.UpdateRepoConf(func(s *conf.Repo) { s.IndexRetentionDays = daysInt })
+
+	return apicontract.Success(apicontract.Null{})
+})
+
+var setRetentionIndexesDaily = contractHandler(apicontract.SetRetentionIndexesDaily, func(c *gin.Context, request apicontract.SetRetentionIndexesDailyRequest) apicontract.Response[apicontract.Null] {
+	indexesInt := int(request.Indexes)
+	if 1 > indexesInt {
+		indexesInt = 180
+	}
+
+	model.UpdateRepoConf(func(s *conf.Repo) { s.RetentionIndexesDaily = indexesInt })
+
+	return apicontract.Success(apicontract.Null{})
+})
+
+var getRepoFile = contractHandler(apicontract.GetRepoFile, func(c *gin.Context, request apicontract.GetRepoFileRequest) apicontract.Response[apicontract.BinaryContent] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	if !holdRepoFileRequest(c, request.ID, ret) {
+		return contractFailure[apicontract.BinaryContent](ret)
 	}
-	days := int(arg["days"].(float64))
-	if 1 > days {
-		days = 180
-	}
-
-	model.Conf.Repo.IndexRetentionDays = days
-	model.Conf.Save()
-}
-
-func setRetentionIndexesDaily(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-	indexes := int(arg["indexes"].(float64))
-	if 1 > indexes {
-		indexes = 180
-	}
-
-	model.Conf.Repo.RetentionIndexesDaily = indexes
-	model.Conf.Save()
-}
-
-func getRepoFile(c *gin.Context) {
-	// Add internal kernel API `/api/repo/getRepoFile` https://github.com/siyuan-note/siyuan/issues/10101
-
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	id := arg["id"].(string)
-	data, p, err := model.GetRepoFile(id)
+	data, p, err := model.GetRepoFile(request.ID)
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
+		return apicontract.Failure[apicontract.BinaryContent](-1, err.Error())
 	}
 
-	contentType := mime.TypeByExtension(filepath.Ext(p))
-	if "" == contentType {
-		if m := mimetype.Detect(data); nil != m {
-			contentType = m.String()
+	return repoFileResponse(data, p)
+})
+
+var rollbackRepoSnapshotFile = contractHandler(apicontract.RollbackRepoSnapshotFile, func(c *gin.Context, request apicontract.RollbackRepoSnapshotFileRequest) apicontract.Response[apicontract.Null] {
+	ret := gulu.Ret.NewResult()
+
+	if !holdRepoFileRequest(c, request.ID, ret) {
+		return contractFailure[apicontract.Null](ret)
+	}
+
+	err := model.RollbackRepoSnapshotFile(request.ID)
+	if nil != err {
+		return apicontract.Failure[apicontract.Null](-1, err.Error())
+	}
+
+	return apicontract.Success(apicontract.Null{})
+})
+
+var openRepoSnapshotFile = contractHandler(apicontract.OpenRepoSnapshotFile, func(c *gin.Context, request apicontract.OpenRepoSnapshotFileRequest) apicontract.Response[apicontract.RepoOpenFileData] {
+	ret := gulu.Ret.NewResult()
+
+	if !holdRepoFileRequest(c, request.ID, ret) {
+		return contractFailure[apicontract.RepoOpenFileData](ret)
+	}
+
+	title, content, displayInText, updated, err := model.OpenRepoSnapshotFile(request.ID)
+	if err != nil {
+		return apicontract.Failure[apicontract.RepoOpenFileData](-1, err.Error())
+	}
+
+	return apicontract.Success(apicontract.RepoOpenFileData{Title: title, Content: content, DisplayInText: displayInText, Updated: updated})
+})
+
+var diffRepoSnapshots = contractHandler(apicontract.DiffRepoSnapshots, func(c *gin.Context, request apicontract.DiffRepoSnapshotsRequest) apicontract.Response[apicontract.RepoDiffData] {
+	diff, err := model.DiffRepoSnapshots(request.Left, request.Right)
+	if err != nil {
+		return apicontract.Failure[apicontract.RepoDiffData](-1, err.Error())
+	}
+
+	return apicontract.Success(apicontract.RepoDiffData{AddsLeft: repoDiffFiles(diff.AddsLeft), UpdatesLeft: repoDiffFiles(diff.UpdatesLeft), UpdatesRight: repoDiffFiles(diff.UpdatesRight), RemovesRight: repoDiffFiles(diff.RemovesRight), Left: (*apicontract.RepoDiffIndex)(diff.LeftIndex), Right: (*apicontract.RepoDiffIndex)(diff.RightIndex)})
+})
+
+var getCloudSpace = contractHandler(apicontract.GetCloudSpace, func(c *gin.Context, request apicontract.EmptyRequest) apicontract.Response[apicontract.CloudSpaceData] {
+	sync, backup, hSize, hAssetSize, hTotalSize, exchangeSize, hTrafficUploadSize, hTrafficDownloadSize, hTrafficAPIGet, hTrafficAPIPut, err := model.GetCloudSpace()
+	if err != nil {
+		util.PushErrMsg(err.Error(), 3000)
+		return apicontract.Failure[apicontract.CloudSpaceData](1, err.Error())
+	}
+	return apicontract.Success(apicontract.CloudSpaceData{
+		Sync: cloudSyncContract(sync), Backup: cloudBackupContract(backup),
+		HAssetSize: hAssetSize, HSize: hSize, HTotalSize: hTotalSize, HExchangeSize: exchangeSize,
+		HTrafficUploadSize: hTrafficUploadSize, HTrafficDownloadSize: hTrafficDownloadSize,
+		HTrafficAPIGet: hTrafficAPIGet, HTrafficAPIPut: hTrafficAPIPut,
+	})
+})
+
+var checkoutRepo = contractHandler(apicontract.CheckoutRepo, func(c *gin.Context, request apicontract.CheckoutRepoRequest) apicontract.Response[apicontract.Null] {
+	ret := gulu.Ret.NewResult()
+
+	if request.SessionID != "" {
+		if util.InvalidIDPattern(request.SessionID, ret) {
+			return contractFailure[apicontract.Null](ret)
+		}
+		markerDir := filepath.Join(util.TempDir, "ai", "agent")
+		os.MkdirAll(markerDir, 0755)
+		markerPath := filepath.Join(markerDir, "agentRollback_"+request.SessionID+".json")
+		marker := map[string]string{"sessionID": request.SessionID, "snapshotID": request.ID}
+		if data, err := json.Marshal(marker); err == nil {
+			os.WriteFile(markerPath, data, 0644)
 		}
 	}
-	if "" == contentType {
-		contentType = "application/octet-stream"
-	}
-	c.Data(http.StatusOK, contentType, data)
-}
 
-func openRepoSnapshotDoc(c *gin.Context) {
+	model.CheckoutRepo(request.ID)
+
+	return apicontract.Success(apicontract.Null{})
+})
+
+var downloadCloudSnapshot = contractHandler(apicontract.DownloadCloudSnapshot, func(c *gin.Context, request apicontract.DownloadCloudSnapshotRequest) apicontract.Response[apicontract.Null] {
+	if err := model.DownloadCloudSnapshot(request.Tag, request.ID); err != nil {
+		return apicontract.Failure[apicontract.Null](-1, err.Error())
+	}
+
+	return apicontract.Success(apicontract.Null{})
+})
+
+var uploadCloudSnapshot = contractHandler(apicontract.UploadCloudSnapshot, func(c *gin.Context, request apicontract.UploadCloudSnapshotRequest) apicontract.Response[apicontract.Null] {
+	if err := model.UploadCloudSnapshot(request.Tag, request.ID); err != nil {
+		return apicontract.Failure[apicontract.Null](-1, err.Error())
+	}
+
+	return apicontract.Success(apicontract.Null{})
+})
+
+var getRepoSnapshots = contractHandler(apicontract.GetRepoSnapshots, func(c *gin.Context, request apicontract.GetRepoSnapshotsRequest) apicontract.Response[apicontract.RepoSnapshotsData] {
+	var snapshots []*model.Snapshot
+	var pageCount, totalCount int
+	var err error
+	if request.ID != "" || request.IncludeFiles {
+		snapshots, pageCount, totalCount, err = model.SearchRepoSnapshot(request.ID, request.IncludeFiles)
+		if err == nil && (request.StartTime != 0 || request.EndTime != 0) {
+			filtered := make([]*model.Snapshot, 0, len(snapshots))
+			for _, snapshot := range snapshots {
+				if model.SnapshotCreatedInRange(snapshot.Created, request.StartTime, request.EndTime) {
+					filtered = append(filtered, snapshot)
+				}
+			}
+			snapshots, totalCount = filtered, len(filtered)
+			pageCount = 0
+			if totalCount > 0 {
+				pageCount = 1
+			}
+		}
+	} else {
+		snapshots, pageCount, totalCount, err = model.GetRepoSnapshotsByTime(int(request.Page), request.StartTime, request.EndTime)
+	}
+	if err != nil {
+		return apicontract.Failure[apicontract.RepoSnapshotsData](-1, err.Error())
+	}
+	return apicontract.Success(apicontract.RepoSnapshotsData{Snapshots: repoSnapshots(snapshots), PageCount: pageCount, TotalCount: totalCount})
+})
+
+var searchRepoFile = contractHandler(apicontract.SearchRepoFile, func(c *gin.Context, request apicontract.SearchRepoFileRequest) apicontract.Response[apicontract.RepoSearchData] {
+	if 1 > len(request.Keyword) {
+		return apicontract.Failure[apicontract.RepoSearchData](-1, "keyword is empty")
+	}
+
+	files, pageCount, totalCount, err := model.SearchRepoFile(request.Keyword, int(request.Page))
+	if err != nil {
+		return apicontract.Failure[apicontract.RepoSearchData](-1, err.Error())
+	}
+
+	return apicontract.Success(apicontract.RepoSearchData{Files: repoDiffFiles(files), PageCount: pageCount, TotalCount: totalCount})
+})
+
+var getRepoDocHistory = contractHandler(apicontract.GetRepoDocHistory, func(c *gin.Context, request apicontract.GetRepoDocHistoryRequest) apicontract.Response[apicontract.RepoDocHistoryData] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	if util.InvalidIDPattern(request.ID, ret) {
+		return contractFailure[apicontract.RepoDocHistoryData](ret)
 	}
 
-	id := arg["id"].(string)
-	title, content, displayInText, updated, err := model.OpenRepoSnapshotDoc(id)
+	if block := treenode.GetBlockTree(request.ID); block != nil {
+		if err := holdEncryptedBoxRequest(c, block.BoxID); err != nil {
+			return apicontract.Failure[apicontract.RepoDocHistoryData](-1, model.Conf.Language(314))
+		}
+	}
+
+	files, pageCount, totalCount, err := model.GetRepoDocHistory(request.ID, int(request.Page))
+	if err != nil {
+		return apicontract.Failure[apicontract.RepoDocHistoryData](-1, err.Error())
+	}
+
+	return apicontract.Success(apicontract.RepoDocHistoryData{Files: repoDocHistories(files), PageCount: pageCount, TotalCount: totalCount})
+})
+
+var exportRepoFile = contractHandler(apicontract.ExportRepoFile, func(c *gin.Context, request apicontract.ExportRepoFileRequest) apicontract.Response[apicontract.RepoExportData] {
+	ret := gulu.Ret.NewResult()
+
+	if !holdRepoFileRequest(c, request.ID, ret) {
+		return contractFailure[apicontract.RepoExportData](ret)
+	}
+
+	exportPath, err := model.ExportRepoFile(request.ID)
+	if err != nil {
+		return apicontract.Failure[apicontract.RepoExportData](-1, err.Error())
+	}
+
+	return apicontract.Success(apicontract.RepoExportData{Path: exportPath})
+})
+
+func holdRepoFileRequest(c *gin.Context, id string, ret *gulu.Result) bool {
+	boxID, err := model.ResolveRepoFileBoxID(id)
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
-		return
+		return false
 	}
-
-	ret.Data = map[string]interface{}{
-		"title":         title,
-		"content":       content,
-		"displayInText": displayInText,
-		"updated":       updated,
+	if err = holdEncryptedBoxRequest(c, boxID); err != nil {
+		ret.Code = -1
+		ret.Msg = model.Conf.Language(314)
+		return false
 	}
+	return true
 }
 
-func diffRepoSnapshots(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	left := arg["left"].(string)
-	right := arg["right"].(string)
-	diff, err := model.DiffRepoSnapshots(left, right)
+var getCloudRepoSnapshots = contractHandler(apicontract.GetCloudRepoSnapshots, func(c *gin.Context, request apicontract.GetCloudRepoSnapshotsRequest) apicontract.Response[apicontract.RepoCloudSnapshotsData] {
+	snapshots, pageCount, totalCount, err := model.GetCloudRepoSnapshotsByTime(int(request.Page), request.StartTime, request.EndTime)
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
+		return apicontract.Failure[apicontract.RepoCloudSnapshotsData](-1, err.Error())
 	}
 
-	ret.Data = map[string]interface{}{
-		"addsLeft":     diff.AddsLeft,
-		"updatesLeft":  diff.UpdatesLeft,
-		"updatesRight": diff.UpdatesRight,
-		"removesRight": diff.RemovesRight,
-		"left":         diff.LeftIndex,
-		"right":        diff.RightIndex,
-	}
-}
+	return apicontract.Success(apicontract.RepoCloudSnapshotsData{Snapshots: repoLogs(snapshots), PageCount: pageCount, TotalCount: totalCount})
+})
 
-func getCloudSpace(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	sync, backup, hSize, hAssetSize, hTotalSize, exchangeSize, hTrafficUploadSize, hTrafficDownloadSize, htrafficAPIGet, hTrafficAPIPut, err := model.GetCloudSpace()
-	if err != nil {
-		ret.Code = 1
-		ret.Msg = err.Error()
-		util.PushErrMsg(err.Error(), 3000)
-		return
-	}
-
-	ret.Data = map[string]interface{}{
-		"sync":                 sync,
-		"backup":               backup,
-		"hAssetSize":           hAssetSize,
-		"hSize":                hSize,
-		"hTotalSize":           hTotalSize,
-		"hExchangeSize":        exchangeSize,
-		"hTrafficUploadSize":   hTrafficUploadSize,
-		"hTrafficDownloadSize": hTrafficDownloadSize,
-		"hTrafficAPIGet":       htrafficAPIGet,
-		"hTrafficAPIPut":       hTrafficAPIPut,
-	}
-}
-
-func checkoutRepo(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	id := arg["id"].(string)
-	model.CheckoutRepo(id)
-}
-
-func downloadCloudSnapshot(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	id := arg["id"].(string)
-	tag := arg["tag"].(string)
-	if err := model.DownloadCloudSnapshot(tag, id); err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
-	}
-}
-
-func uploadCloudSnapshot(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	id := arg["id"].(string)
-	tag := arg["tag"].(string)
-	if err := model.UploadCloudSnapshot(tag, id); err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
-	}
-}
-
-func getRepoSnapshots(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	page := arg["page"].(float64)
-	snapshots, pageCount, totalCount, err := model.GetRepoSnapshots(int(page))
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
-	}
-	ret.Data = map[string]interface{}{
-		"snapshots":  snapshots,
-		"pageCount":  pageCount,
-		"totalCount": totalCount,
-	}
-}
-
-func getCloudRepoSnapshots(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	page := int(arg["page"].(float64))
-
-	snapshots, pageCount, totalCount, err := model.GetCloudRepoSnapshots(page)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
-	}
-
-	ret.Data = map[string]interface{}{
-		"snapshots":  snapshots,
-		"pageCount":  pageCount,
-		"totalCount": totalCount,
-	}
-}
-
-func getCloudRepoTagSnapshots(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
+var getCloudRepoTagSnapshots = contractHandler(apicontract.GetCloudRepoTagSnapshots, func(c *gin.Context, request apicontract.EmptyRequest) apicontract.Response[apicontract.RepoCloudTagsData] {
 	snapshots, err := model.GetCloudRepoTagSnapshots()
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
+		return apicontract.Failure[apicontract.RepoCloudTagsData](-1, err.Error())
 	}
 
-	ret.Data = map[string]interface{}{
-		"snapshots": snapshots,
-	}
-}
+	return apicontract.Success(apicontract.RepoCloudTagsData{Snapshots: repoLogs(snapshots)})
+})
 
-func removeCloudRepoTagSnapshot(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	tag := arg["tag"].(string)
-	err := model.RemoveCloudRepoTag(tag)
+var removeCloudRepoTagSnapshot = contractHandler(apicontract.RemoveCloudRepoTagSnapshot, func(c *gin.Context, request apicontract.RemoveCloudRepoTagSnapshotRequest) apicontract.Response[apicontract.Null] {
+	err := model.RemoveCloudRepoTag(request.Tag)
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
+		return apicontract.Failure[apicontract.Null](-1, err.Error())
 	}
-}
 
-func getRepoTagSnapshots(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+	return apicontract.Success(apicontract.Null{})
+})
 
+var getRepoTagSnapshots = contractHandler(apicontract.GetRepoTagSnapshots, func(c *gin.Context, request apicontract.EmptyRequest) apicontract.Response[apicontract.RepoTagsData] {
 	snapshots, err := model.GetTagSnapshots()
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
+		return apicontract.Failure[apicontract.RepoTagsData](-1, err.Error())
 	}
 
-	ret.Data = map[string]interface{}{
-		"snapshots": snapshots,
-	}
-}
+	return apicontract.Success(apicontract.RepoTagsData{Snapshots: repoSnapshots(snapshots)})
+})
 
-func removeRepoTagSnapshot(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	tag := arg["tag"].(string)
-	err := model.RemoveTagSnapshot(tag)
+var removeRepoTagSnapshot = contractHandler(apicontract.RemoveRepoTagSnapshot, func(c *gin.Context, request apicontract.RemoveRepoTagSnapshotRequest) apicontract.Response[apicontract.Null] {
+	err := model.RemoveTagSnapshot(request.Tag)
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return
-	}
-}
-
-func createSnapshot(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+		return apicontract.Failure[apicontract.Null](-1, err.Error())
 	}
 
-	memo := arg["memo"].(string)
-	if err := model.IndexRepo(memo); err != nil {
-		ret.Code = -1
-		ret.Msg = fmt.Sprintf(model.Conf.Language(140), err)
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
-	}
-}
+	return apicontract.Success(apicontract.Null{})
+})
 
-func tagSnapshot(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	id := arg["id"].(string)
-	name := arg["name"].(string)
-	if err := model.TagSnapshot(id, name); err != nil {
-		ret.Code = -1
-		ret.Msg = fmt.Sprintf(model.Conf.Language(140), err)
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
-	}
-}
-
-func importRepoKey(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	base64Key := arg["key"].(string)
-	retKey, err := model.ImportRepoKey(base64Key)
+var createSnapshot = contractHandler(apicontract.CreateSnapshot, func(c *gin.Context, request apicontract.CreateSnapshotRequest) apicontract.Response[apicontract.CreateSnapshotData] {
+	id, created, err := model.CreateRepoSnapshot(request.Memo)
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = fmt.Sprintf(model.Conf.Language(137), err)
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
+		return apicontract.Failure[apicontract.CreateSnapshotData](-1, fmt.Sprintf(model.Conf.Language(140), err))
+	}
+	return apicontract.Success(apicontract.CreateSnapshotData{ID: id, Created: created})
+})
+
+var checkSnapshot = contractHandler(apicontract.CheckSnapshot, func(c *gin.Context, request apicontract.EmptyRequest) apicontract.Response[apicontract.CheckSnapshotData] {
+	changed, err := model.CheckRepoSnapshot()
+	if err != nil {
+		return apicontract.Failure[apicontract.CheckSnapshotData](-1, err.Error())
+	}
+	return apicontract.Success(apicontract.CheckSnapshotData{Changed: changed})
+})
+
+var setSnapshotMemo = contractHandler(apicontract.SetSnapshotMemo, func(c *gin.Context, request apicontract.SetSnapshotMemoRequest) apicontract.Response[apicontract.Null] {
+	if err := model.SetRepoSnapshotMemo(request.ID, request.Memo); err != nil {
+		return apicontract.Failure[apicontract.Null](-1, err.Error())
+	}
+	return apicontract.Success(apicontract.Null{})
+})
+
+var tagSnapshot = contractHandler(apicontract.TagSnapshot, func(c *gin.Context, request apicontract.TagSnapshotRequest) apicontract.Response[apicontract.Null] {
+	if err := model.TagSnapshot(request.ID, request.Name); err != nil {
+		return apicontract.FailureWithTimeout[apicontract.Null](-1, fmt.Sprintf(model.Conf.Language(140), err), 5000)
 	}
 
-	ret.Data = map[string]interface{}{
-		"key": retKey,
-	}
-}
+	return apicontract.Success(apicontract.Null{})
+})
 
-func initRepoKeyFromPassphrase(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+var importRepoKey = contractHandler(apicontract.ImportRepoKey, func(c *gin.Context, request apicontract.ImportRepoKeyRequest) apicontract.Response[apicontract.RepoKeyData] {
+	retKey, err := model.ImportRepoKey(request.Key)
+	if err != nil {
+		return apicontract.FailureWithTimeout[apicontract.RepoKeyData](-1, fmt.Sprintf(model.Conf.Language(137), err), 5000)
 	}
 
-	pass := arg["pass"].(string)
-	if err := model.InitRepoKeyFromPassphrase(pass); err != nil {
-		ret.Code = -1
-		ret.Msg = fmt.Sprintf(model.Conf.Language(137), err)
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
+	return apicontract.Success(apicontract.RepoKeyData{Key: retKey})
+})
+
+var initRepoKeyFromPassphrase = contractHandler(apicontract.InitRepoKeyFromPassphrase, func(c *gin.Context, request apicontract.InitRepoKeyFromPassphraseRequest) apicontract.Response[apicontract.RepoKeyData] {
+	if err := model.InitRepoKeyFromPassphrase(request.Pass); err != nil {
+		return apicontract.FailureWithTimeout[apicontract.RepoKeyData](-1, fmt.Sprintf(model.Conf.Language(137), err), 5000)
 	}
 
-	ret.Data = map[string]interface{}{
-		"key": model.Conf.Repo.Key,
-	}
-}
+	return apicontract.Success(apicontract.RepoKeyData{Key: base64.StdEncoding.EncodeToString(model.Conf.Repo.Load().Key)})
+})
 
-func initRepoKey(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
+var initRepoKey = contractHandler(apicontract.InitRepoKey, func(c *gin.Context, request apicontract.EmptyRequest) apicontract.Response[apicontract.RepoKeyData] {
 	if err := model.InitRepoKey(); err != nil {
-		ret.Code = -1
-		ret.Msg = fmt.Sprintf(model.Conf.Language(137), err)
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
+		return apicontract.FailureWithTimeout[apicontract.RepoKeyData](-1, fmt.Sprintf(model.Conf.Language(137), err), 5000)
 	}
 
-	ret.Data = map[string]interface{}{
-		"key": model.Conf.Repo.Key,
-	}
-}
+	return apicontract.Success(apicontract.RepoKeyData{Key: base64.StdEncoding.EncodeToString(model.Conf.Repo.Load().Key)})
+})
 
-func resetRepo(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
+var resetRepo = contractHandler(apicontract.ResetRepo, func(c *gin.Context, request apicontract.EmptyRequest) apicontract.Response[apicontract.Null] {
 	if err := model.ResetRepo(); err != nil {
-		ret.Code = -1
-		ret.Msg = fmt.Sprintf(model.Conf.Language(146), err.Error())
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
+		return apicontract.FailureWithTimeout[apicontract.Null](-1, fmt.Sprintf(model.Conf.Language(146), err.Error()), 5000)
 	}
-}
 
-func purgeRepo(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+	return apicontract.Success(apicontract.Null{})
+})
 
+var purgeRepo = contractHandler(apicontract.PurgeRepo, func(c *gin.Context, request apicontract.EmptyRequest) apicontract.Response[apicontract.Null] {
 	if err := model.PurgeRepo(); err != nil {
-		ret.Code = -1
-		ret.Msg = fmt.Sprintf(model.Conf.Language(201), err.Error())
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
+		return apicontract.FailureWithTimeout[apicontract.Null](-1, fmt.Sprintf(model.Conf.Language(201), err.Error()), 5000)
 	}
-}
 
-func purgeCloudRepo(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+	return apicontract.Success(apicontract.Null{})
+})
 
+var purgeCloudRepo = contractHandler(apicontract.PurgeCloudRepo, func(c *gin.Context, request apicontract.EmptyRequest) apicontract.Response[apicontract.Null] {
 	if err := model.PurgeCloud(); err != nil {
-		ret.Code = -1
-		ret.Msg = fmt.Sprintf(model.Conf.Language(201), err.Error())
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
+		return apicontract.FailureWithTimeout[apicontract.Null](-1, fmt.Sprintf(model.Conf.Language(201), err.Error()), 5000)
 	}
+
+	return apicontract.Success(apicontract.Null{})
+})
+
+// repoFileResponse 保留文件媒体类型和文件内容末尾的成功信封。
+func repoFileResponse(data []byte, path string) apicontract.Response[apicontract.BinaryContent] {
+	contentType := mime.TypeByExtension(filepath.Ext(path))
+	if contentType == "" {
+		if detected := mimetype.Detect(data); detected != nil {
+			contentType = detected.String()
+		}
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	// 非空文件由 Content-Length 限定载荷；空文件保留成功信封。
+	if len(data) == 0 {
+		data, _ = json.Marshal(apicontract.Success(apicontract.Null{}))
+	}
+	return apicontract.SuccessBinary(contentType, data)
+}
+func repoDiffFiles(values []*model.DiffFile) []*apicontract.RepoDiffFile {
+	if values == nil {
+		return nil
+	}
+	ret := make([]*apicontract.RepoDiffFile, len(values))
+	for i, value := range values {
+		ret[i] = (*apicontract.RepoDiffFile)(value)
+	}
+	return ret
+}
+func repoDocHistories(values []*model.RepoDocHistory) []*apicontract.RepoDocHistory {
+	if values == nil {
+		return nil
+	}
+	ret := make([]*apicontract.RepoDocHistory, len(values))
+	for i, value := range values {
+		if value == nil {
+			continue
+		}
+		ret[i] = &apicontract.RepoDocHistory{
+			FileID: value.FileID, IndexID: value.IndexID, Title: value.Title, HSize: value.HSize, Updated: value.Updated,
+			Snapshots: docHistorySnapshots(value.Snapshots),
+		}
+	}
+	return ret
+}
+func repoLog(value *dejavu.Log) *apicontract.RepoLog {
+	if value == nil {
+		return nil
+	}
+	ret := &apicontract.RepoLog{ID: value.ID, Memo: value.Memo, Created: value.Created, HCreated: value.HCreated, Count: value.Count, Size: value.Size, HSize: value.HSize, SystemID: value.SystemID, SystemName: value.SystemName, SystemOS: value.SystemOS, Tag: value.Tag, HTagUpdated: value.HTagUpdated}
+	if value.Files != nil {
+		ret.Files = make([]*apicontract.RepoFile, len(value.Files))
+		for i, file := range value.Files {
+			ret.Files[i] = repoFile(file)
+		}
+	}
+	return ret
+}
+func repoFile(value *entity.File) *apicontract.RepoFile { return (*apicontract.RepoFile)(value) }
+func repoLogs(values []*dejavu.Log) []*apicontract.RepoLog {
+	if values == nil {
+		return nil
+	}
+	ret := make([]*apicontract.RepoLog, len(values))
+	for i, value := range values {
+		ret[i] = repoLog(value)
+	}
+	return ret
+}
+func repoSnapshots(values []*model.Snapshot) []*apicontract.RepoSnapshot {
+	if values == nil {
+		return nil
+	}
+	ret := make([]*apicontract.RepoSnapshot, len(values))
+	for i, value := range values {
+		if value == nil {
+			continue
+		}
+		snapshot := &apicontract.RepoSnapshot{RepoLog: *repoLog(value.Log), Tags: value.Tags, RequiresDownload: value.RequiresDownload}
+		if value.TypesCount != nil {
+			snapshot.TypesCount = make([]*apicontract.RepoTypeCount, len(value.TypesCount))
+			for j, count := range value.TypesCount {
+				snapshot.TypesCount[j] = (*apicontract.RepoTypeCount)(count)
+			}
+		}
+		ret[i] = snapshot
+	}
+	return ret
 }

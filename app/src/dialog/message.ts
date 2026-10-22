@@ -1,5 +1,7 @@
 import {genUUID} from "../util/genID";
 import {Constants} from "../constants";
+import {getHostCapabilities, sanitizeKernelHTML} from "../util/hostCapabilities";
+import {progressLoading} from "./progress";
 
 export const initMessage = () => {
     const messageElement = document.getElementById("message");
@@ -37,6 +39,22 @@ export const showMessage = (message: string, timeout = 6000, type = "info", mess
         return;
     }
 
+    // 退出期间将内核的退出和同步状态合并到进度提示，其他通知仍按原有方式展示。
+    if (type === "info" && document.getElementById("exitProgress") &&
+        [window.siyuan.languages._kernel[95], window.siyuan.languages._kernel[81]].includes(message)) {
+        progressLoading({code: 1, msg: message === window.siyuan.languages._kernel[81] ?
+            `${window.siyuan.languages.exitWaiting} ${message}` : window.siyuan.languages.exitWaiting}, "exitProgress");
+        return;
+    }
+
+    const remoteKernel = getHostCapabilities().remoteKernel;
+    if (remoteKernel) {
+        timeout = Number.isFinite(timeout) ? Math.max(-1, Math.min(Math.trunc(timeout), 2147483647)) : 6000;
+        type = type === "error" ? "error" : "info";
+    }
+    const safeMessage = sanitizeKernelHTML(message);
+    const safeMessageId = remoteKernel && messageId && !/^[\w-]+$/.test(messageId) ? undefined : messageId;
+
     const messagesElement = document.getElementById("message").firstElementChild;
     if (!messagesElement) {
         let tempMessages = document.getElementById("tempMessage");
@@ -48,12 +66,12 @@ id="tempMessage"></div>`);
         tempMessages.insertAdjacentHTML("beforeend", `<div style="background: white;padding: 8px 16px;border-radius: 6px;margin-bottom: 16px;"  
 data-timeout="${timeout}" 
 data-type="${type}" 
-data-message-id="${messageId || ""}">${message}</div>`);
+data-message-id="${safeMessageId || ""}">${safeMessage}</div>`);
         return;
     }
-    const id = messageId || genUUID();
+    const id = safeMessageId || genUUID();
     const existElement = messagesElement.querySelector(`.b3-snackbar[data-id="${id}"]`);
-    const messageVersion = message + (type === "error" ? " v" + Constants.SIYUAN_VERSION : "");
+    const messageVersion = safeMessage + (type === "error" ? " v" + Constants.SIYUAN_VERSION : "");
     if (existElement) {
         window.clearTimeout(parseInt(existElement.getAttribute("data-timeoutid")));
         existElement.innerHTML = `<div data-type="textMenu" class="b3-snackbar__content${timeout === 0 ? " b3-snackbar__content--close" : ""}">${messageVersion}</div>${timeout === 0 ? '<svg class="b3-snackbar__close"><use xlink:href="#iconCloseRound"></use></svg>' : ""}`;

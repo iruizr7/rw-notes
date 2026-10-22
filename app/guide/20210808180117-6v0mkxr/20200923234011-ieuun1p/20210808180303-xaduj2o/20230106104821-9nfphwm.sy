@@ -6,7 +6,7 @@
 		"id": "20230106104821-9nfphwm",
 		"title": "Workspace",
 		"type": "doc",
-		"updated": "20250306083914"
+		"updated": "20261016112115"
 	},
 	"Children": [
 		{
@@ -111,7 +111,7 @@
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20230109113955-ja8w7gp",
-				"updated": "20250306083914"
+				"updated": "20261016112115"
 			},
 			"Children": [
 				{
@@ -126,7 +126,7 @@
 			"ListData": {},
 			"Properties": {
 				"id": "20230109113955-471odxk",
-				"updated": "20250306083914"
+				"updated": "20261016112115"
 			},
 			"Children": [
 				{
@@ -138,7 +138,7 @@
 					},
 					"Properties": {
 						"id": "20230109113955-4p8sitz",
-						"updated": "20250306083853"
+						"updated": "20261016112115"
 					},
 					"Children": [
 						{
@@ -160,7 +160,7 @@
 							"Type": "NodeParagraph",
 							"Properties": {
 								"id": "20230109113955-f2iskk4",
-								"updated": "20250306083853"
+								"updated": "20261016112115"
 							},
 							"Children": [
 								{
@@ -170,7 +170,7 @@
 								{
 									"Type": "NodeTextMark",
 									"TextMarkType": "code",
-									"TextMarkTextContent": "--workspace=\u0026quot;Absolute-path-of-the-workspace\u0026quot;"
+									"TextMarkTextContent": "--workspace=&quot;Absolute-path-of-the-workspace&quot;"
 								},
 								{
 									"Type": "NodeText",
@@ -179,7 +179,7 @@
 								{
 									"Type": "NodeTextMark",
 									"TextMarkType": "code",
-									"TextMarkTextContent": "\u0026quot;"
+									"TextMarkTextContent": "&quot;"
 								},
 								{
 									"Type": "NodeText",
@@ -188,7 +188,7 @@
 								{
 									"Type": "NodeTextMark",
 									"TextMarkType": "code",
-									"TextMarkTextContent": "--workspace=\u0026quot;F:\\RW Notes\u0026quot;"
+									"TextMarkTextContent": "--workspace=&quot;F:\\RW Notes&quot;"
 								},
 								{
 									"Type": "NodeText",
@@ -201,7 +201,7 @@
 								},
 								{
 									"Type": "NodeText",
-									"Data": "​ to specify the port that the kernel listens to."
+									"Data": "​ to specify the port that the kernel listens to"
 								}
 							]
 						}
@@ -216,7 +216,7 @@
 					},
 					"Properties": {
 						"id": "20230109113955-gi1ao5j",
-						"updated": "20250306083914"
+						"updated": "20261016112115"
 					},
 					"Children": [
 						{
@@ -224,21 +224,48 @@
 							"Type": "NodeParagraph",
 							"Properties": {
 								"id": "20230109113955-hpw3tsz",
-								"updated": "20250306083914"
+								"updated": "20261016112115"
 							},
 							"Children": [
 								{
 									"Type": "NodeText",
-									"Data": "On the mobile, we can switch between different workspaces in "
+									"Data": "On mobile, switch workspaces in "
 								},
 								{
 									"Type": "NodeTextMark",
 									"TextMarkType": "kbd",
-									"TextMarkTextContent": "About"
+									"TextMarkTextContent": "More"
 								},
 								{
 									"Type": "NodeText",
-									"Data": "​ in the right colum panel"
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "Settings"
+								},
+								{
+									"Type": "NodeText",
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "App"
+								},
+								{
+									"Type": "NodeText",
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "Workspaces"
+								},
+								{
+									"Type": "NodeText",
+									"Data": ""
 								}
 							]
 						}
@@ -252,7 +279,7 @@
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20230106105213-0cv5aqm",
-				"updated": "20230106105213"
+				"updated": "20260918195936"
 			},
 			"Children": [
 				{
@@ -553,6 +580,20 @@
 							]
 						}
 					]
+				}
+			]
+		},
+		{
+			"ID": "20260917190844-1yo0d58",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20260917190844-1yo0d58",
+				"updated": "20260918195936"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "Third-party themes are stored in data/themes/ and icon packages in data/icons/; both participate in data sync and snapshots. Each device keeps its appearance selection in its local conf/conf.json. Built-in appearance resources are not synced. Upgrade migration moves the original directories into data and removes the source copies."
 				}
 			]
 		}

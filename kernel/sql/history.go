@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -36,8 +36,14 @@ type History struct {
 	Path    string
 }
 
-func QueryHistory(stmt string) (ret []map[string]interface{}, err error) {
-	ret = []map[string]interface{}{}
+func QueryHistory(stmt string) (ret []map[string]any, err error) {
+	ret = []map[string]any{}
+	// 历史查询语句由调用方拼接，执行前必须校验为单条只读语句
+	// https://github.com/siyuan-note/siyuan/security/advisories/GHSA-4hjx-84f6-gr7c
+	if err = CheckHistoryReadonlyStatement(stmt); nil != err {
+		logging.LogWarnf("sql query [%s] rejected as non-readonly: %s", stmt, err)
+		return
+	}
 	rows, err := queryHistory(stmt)
 	if err != nil {
 		logging.LogWarnf("sql query [%s] failed: %s", stmt, err)
@@ -51,8 +57,8 @@ func QueryHistory(stmt string) (ret []map[string]interface{}, err error) {
 	}
 
 	for rows.Next() {
-		columns := make([]interface{}, len(cols))
-		columnPointers := make([]interface{}, len(cols))
+		columns := make([]any, len(cols))
+		columnPointers := make([]any, len(cols))
 		for i := range columns {
 			columnPointers[i] = &columns[i]
 		}
@@ -61,9 +67,9 @@ func QueryHistory(stmt string) (ret []map[string]interface{}, err error) {
 			return
 		}
 
-		m := make(map[string]interface{})
+		m := make(map[string]any)
 		for i, colName := range cols {
-			val := columnPointers[i].(*interface{})
+			val := columnPointers[i].(*any)
 			m[colName] = *val
 		}
 		ret = append(ret, m)
@@ -73,6 +79,12 @@ func QueryHistory(stmt string) (ret []map[string]interface{}, err error) {
 
 func SelectHistoriesRawStmt(stmt string) (ret []*History) {
 	if nil == historyDB {
+		return
+	}
+	// 历史查询语句由调用方拼接，执行前必须校验为单条只读语句
+	// https://github.com/siyuan-note/siyuan/security/advisories/GHSA-4hjx-84f6-gr7c
+	if err := CheckHistoryReadonlyStatement(stmt); nil != err {
+		logging.LogWarnf("sql query [%s] rejected as non-readonly: %s", stmt, err)
 		return
 	}
 	rows, err := historyDB.Query(stmt)
@@ -99,7 +111,7 @@ func scanHistoryRows(rows *sql.Rows) (ret *History) {
 	return
 }
 
-func queryHistory(query string, args ...interface{}) (*sql.Rows, error) {
+func queryHistory(query string, args ...any) (*sql.Rows, error) {
 	query = strings.TrimSpace(query)
 	if "" == query {
 		return nil, errors.New("statement is empty")
@@ -110,7 +122,7 @@ func queryHistory(query string, args ...interface{}) (*sql.Rows, error) {
 	return historyDB.Query(query, args...)
 }
 
-func deleteOutdatedHistories(tx *sql.Tx, before int64, context map[string]interface{}) (err error) {
+func deleteOutdatedHistories(tx *sql.Tx, before int64) (err error) {
 	stmt := "DELETE FROM histories_fts_case_insensitive WHERE CAST(created AS INTEGER) < ?"
 	if err = execStmtTx(tx, stmt, before); err != nil {
 		return
@@ -123,7 +135,7 @@ const (
 	HistoriesPlaceholder              = "(?, ?, ?, ?, ?, ?, ?)"
 )
 
-func insertHistories(tx *sql.Tx, histories []*History, context map[string]interface{}) (err error) {
+func insertHistories(tx *sql.Tx, histories []*History, context map[string]any) (err error) {
 	if 1 > len(histories) {
 		return
 	}
@@ -148,9 +160,9 @@ func insertHistories(tx *sql.Tx, histories []*History, context map[string]interf
 	return
 }
 
-func insertHistories0(tx *sql.Tx, bulk []*History, context map[string]interface{}) (err error) {
+func insertHistories0(tx *sql.Tx, bulk []*History, context map[string]any) (err error) {
 	valueStrings := make([]string, 0, len(bulk))
-	valueArgs := make([]interface{}, 0, len(bulk)*strings.Count(HistoriesPlaceholder, "?"))
+	valueArgs := make([]any, 0, len(bulk)*strings.Count(HistoriesPlaceholder, "?"))
 	for _, b := range bulk {
 		valueStrings = append(valueStrings, HistoriesPlaceholder)
 		valueArgs = append(valueArgs, b.ID)

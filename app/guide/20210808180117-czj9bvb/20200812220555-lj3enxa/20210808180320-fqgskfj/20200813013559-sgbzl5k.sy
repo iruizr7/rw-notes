@@ -6,7 +6,7 @@
 		"id": "20200813013559-sgbzl5k",
 		"title": "引用内容块",
 		"type": "doc",
-		"updated": "20250311200002"
+		"updated": "20261015221015"
 	},
 	"Children": [
 		{
@@ -15,7 +15,7 @@
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20200817123136-in6y5m1",
-				"updated": "20210512154105"
+				"updated": "20261015221015"
 			},
 			"Children": [
 				{
@@ -53,6 +53,111 @@
 					"Type": "NodeTextMark",
 					"TextMarkType": "tag",
 					"TextMarkTextContent": "内容块/引用"
+				}
+			]
+		},
+		{
+			"ID": "20260927091603-ca0ts26",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20260927091603-ca0ts26",
+				"updated": "20260927183214"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "输入 "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "code",
+					"TextMarkTextContent": "(("
+				},
+				{
+					"Type": "NodeText",
+					"Data": " 或 "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "code",
+					"TextMarkTextContent": "[["
+				},
+				{
+					"Type": "NodeText",
+					"Data": " 和文档标题后，可在引用候选列表中选择 "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "选择位置新建文档"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "，指定笔记本根目录或父文档。确认后将在该位置创建文档，并在原位置插入引用。所选位置仅对本次创建生效，不会修改默认保存路径；取消不会创建文档。桌面端和移动端均支持此操作。数据库条目绑定或重新绑定文档时也可使用此操作。文档创建成功后才会绑定到该条目；取消或创建失败不会改变原有绑定。"
+				}
+			]
+		},
+		{
+			"ID": "20261014130425-cikkb9k",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20261014130425-cikkb9k",
+				"updated": "20261015221015"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "在 "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "设置"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "编辑器"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "双向链接"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "自动闭合 [[ 或 【【"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " 中可以启用自动闭合，默认关闭。启用后，输入 [[ 或 【【 会在光标后补全对应的 ]] 或 】】；输入两个闭合括号可跳过闭合符并完成引用。按 Enter 选择候选项也会替换闭合符；在空的 [[]] 或 【【】】 中按退格会删除整对括号。"
+				}
+			]
+		},
+		{
+			"ID": "20261014130425-nr878bc",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20261014130425-nr878bc",
+				"updated": "20261014223520"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "输入 ]] 或 】】 完成引用时，先查找标题完全一致的文档，再查找忽略大小写后标题一致的文档，然后使用匹配的日记；都未匹配时按块引新建文档的默认位置创建文档。行级代码、代码块和行级公式中不生效。输入法文字在提交后处理，已由输入法补全的闭合括号会保留。"
 				}
 			]
 		},
@@ -277,7 +382,7 @@
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20220623194755-30vtsr7",
-				"updated": "20250311200002"
+				"updated": "20260820190627"
 			},
 			"Children": [
 				{
@@ -423,7 +528,7 @@
 			"ListData": {},
 			"Properties": {
 				"id": "20220623195559-r0greck",
-				"updated": "20230420185816"
+				"updated": "20260820190627"
 			},
 			"Children": [
 				{
@@ -478,7 +583,8 @@
 						"Marker": "Kg=="
 					},
 					"Properties": {
-						"id": "20220623195701-obv1sdb"
+						"id": "20220623195701-obv1sdb",
+						"updated": "20260820190627"
 					},
 					"Children": [
 						{
@@ -486,12 +592,12 @@
 							"Type": "NodeParagraph",
 							"Properties": {
 								"id": "20220623195701-akeq453",
-								"updated": "20220623195737"
+								"updated": "20260820190627"
 							},
 							"Children": [
 								{
 									"Type": "NodeText",
-									"Data": "右键单击"
+									"Data": "右键点击"
 								},
 								{
 									"Type": "NodeText",
@@ -514,7 +620,7 @@
 					},
 					"Properties": {
 						"id": "20220623195738-5zwao6z",
-						"updated": "20220623195906"
+						"updated": "20260820190627"
 					},
 					"Children": [
 						{
@@ -522,12 +628,12 @@
 							"Type": "NodeParagraph",
 							"Properties": {
 								"id": "20220623195738-7bxe56c",
-								"updated": "20220623195906"
+								"updated": "20260820190627"
 							},
 							"Children": [
 								{
 									"Type": "NodeText",
-									"Data": "右键单击"
+									"Data": "右键点击"
 								},
 								{
 									"Type": "NodeText",
@@ -693,7 +799,7 @@
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20230420122954-zw10k6f",
-				"updated": "20230420122957"
+				"updated": "20260803163440"
 			},
 			"Children": [
 				{
@@ -707,7 +813,7 @@
 			"Type": "NodeParagraph",
 			"Properties": {
 				"id": "20230518100357-4wadf96",
-				"updated": "20230518100526"
+				"updated": "20260803163440"
 			},
 			"Children": [
 				{
@@ -730,7 +836,7 @@
 				},
 				{
 					"Type": "NodeText",
-					"Data": "​ 中启用 "
+					"Data": " ​ 中启用 "
 				},
 				{
 					"Type": "NodeTextMark",
@@ -966,7 +1072,7 @@
 								{
 									"Type": "NodeTextMark",
 									"TextMarkType": "code",
-									"TextMarkTextContent": "\u0026apos;"
+									"TextMarkTextContent": "&apos;"
 								},
 								{
 									"Type": "NodeText",

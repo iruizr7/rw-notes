@@ -6,7 +6,7 @@
 		"id": "20211226122523-rl8356a",
 		"title": "在瀏覽器上使用",
 		"type": "doc",
-		"updated": "20221025093344"
+		"updated": "20261016112115"
 	},
 	"Children": [
 		{
@@ -15,7 +15,7 @@
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20211226122545-a65v8e1",
-				"updated": "20211225220755"
+				"updated": "20261016112115"
 			},
 			"Children": [
 				{
@@ -29,30 +29,39 @@
 			"Type": "NodeParagraph",
 			"Properties": {
 				"id": "20221025093315-nlguzfi",
-				"updated": "20221025093344"
+				"updated": "20261016112115"
 			},
 			"Children": [
 				{
 					"Type": "NodeText",
-					"Data": "在 "
+					"Data": "在執行中的應用內開啟 "
 				},
 				{
 					"Type": "NodeTextMark",
 					"TextMarkType": "kbd",
-					"TextMarkTextContent": "設置"
+					"TextMarkTextContent": "設定"
 				},
 				{
 					"Type": "NodeText",
-					"Data": "​ - "
+					"Data": " - "
 				},
 				{
 					"Type": "NodeTextMark",
 					"TextMarkType": "kbd",
-					"TextMarkTextContent": "關於"
+					"TextMarkTextContent": "鑑權"
 				},
 				{
 					"Type": "NodeText",
-					"Data": "​ - "
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "伺服"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
 				},
 				{
 					"Type": "NodeTextMark",
@@ -61,7 +70,7 @@
 				},
 				{
 					"Type": "NodeText",
-					"Data": "​ - "
+					"Data": " - "
 				},
 				{
 					"Type": "NodeTextMark",
@@ -70,16 +79,7 @@
 				},
 				{
 					"Type": "NodeText",
-					"Data": "​ 後就可以直接在瀏覽器上使用了，如果需要在區域網內使用，將 "
-				},
-				{
-					"Type": "NodeTextMark",
-					"TextMarkType": "code",
-					"TextMarkTextContent": "127.0.0.1"
-				},
-				{
-					"Type": "NodeText",
-					"Data": "​ 換成區域網 IP 地址即可。"
+					"Data": "，即可在本機瀏覽器使用。保持核心執行，使用開啟的位址及其連接埠。"
 				}
 			]
 		},
@@ -88,12 +88,68 @@
 			"Type": "NodeParagraph",
 			"Properties": {
 				"id": "20221025093315-v89zg6i",
-				"updated": "20221025093315"
+				"updated": "20261016112115"
 			},
 			"Children": [
 				{
 					"Type": "NodeText",
-					"Data": "除了本地區域網使用，通過以下兩個方法可以實現公網使用："
+					"Data": "在同一區域網路的其他裝置存取前，先設定鎖屏密碼或有效的 "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "block-ref",
+					"TextMarkBlockRefID": "20260804190001-oidctw1",
+					"TextMarkBlockRefSubtype": "s",
+					"TextMarkTextContent": "OIDC 登入"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "，開啟 "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "設定"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "鑑權"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "伺服"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "網路伺服"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "，並在應用退出後重新開啟思源。然後將位址中的 "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "code",
+					"TextMarkTextContent": "127.0.0.1"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " 替換為核心所在電腦的區域網路 IP，保留顯示的連接埠，並在防火牆中允許該連接埠。公網存取可採用以下部署方式："
 				}
 			]
 		},
@@ -187,17 +243,42 @@
 			]
 		},
 		{
+			"ID": "20260903150000-c65oi4q",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20260903150000-c65oi4q",
+				"updated": "20260903150000"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "如需使用桌面端連線至遠端內核，請參閱 "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "block-ref",
+					"TextMarkBlockRefID": "20260903150000-3qa6edk",
+					"TextMarkBlockRefSubtype": "s",
+					"TextMarkTextContent": "連線至遠端內核"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "。"
+				}
+			]
+		},
+		{
 			"ID": "20211226122545-lsv6dhu",
 			"Type": "NodeHeading",
 			"HeadingLevel": 3,
 			"Properties": {
 				"id": "20211226122545-lsv6dhu",
-				"updated": "20211226011452"
+				"updated": "20261016112115"
 			},
 			"Children": [
 				{
 					"Type": "NodeText",
-					"Data": "鑒權密碼"
+					"Data": "鎖屏密碼"
 				}
 			]
 		},
@@ -206,7 +287,7 @@
 			"Type": "NodeParagraph",
 			"Properties": {
 				"id": "20211226122545-psqbx03",
-				"updated": "20211228125029"
+				"updated": "20261016112115"
 			},
 			"Children": [
 				{
@@ -216,7 +297,7 @@
 				{
 					"Type": "NodeTextMark",
 					"TextMarkType": "kbd",
-					"TextMarkTextContent": "設置"
+					"TextMarkTextContent": "設定"
 				},
 				{
 					"Type": "NodeText",
@@ -225,11 +306,69 @@
 				{
 					"Type": "NodeTextMark",
 					"TextMarkType": "kbd",
-					"TextMarkTextContent": "關於"
+					"TextMarkTextContent": "鑑權"
 				},
 				{
 					"Type": "NodeText",
-					"Data": " 中可配置瀏覽器存取鑒權密碼，留空表示不啟用鑒權。這在開放網絡（比如辦公場所和公網）會比較有用，只有鑒權通過後才能進入工作空間。"
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "登入與權杖"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "鎖屏密碼"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " 中設定鎖屏密碼。留空表示不啟用密碼登入；一般的非本機存取仍需要密碼或有效的 OIDC 設定。請先完成鑑權設定，再將核心開放給其他裝置。"
+				}
+			]
+		},
+		{
+			"ID": "20260804120201-oidclog",
+			"Type": "NodeHeading",
+			"HeadingLevel": 3,
+			"Properties": {
+				"id": "20260804120201-oidclog",
+				"updated": "20260804193000"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "OIDC 登入"
+				}
+			]
+		},
+		{
+			"ID": "20260804190501-oidcrf2",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20260804190501-oidcrf2",
+				"updated": "20260804193000"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "有關提供者、回呼位址、准入規則、多端登入、Docker 設定和疑難排解的完整說明，請參閱 "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "block-ref",
+					"TextMarkBlockRefID": "20260804190001-oidctw1",
+					"TextMarkBlockRefSubtype": "s",
+					"TextMarkTextContent": "OIDC 登入"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "。"
 				}
 			]
 		}

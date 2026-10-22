@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -18,7 +18,6 @@ package api
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,25 +28,21 @@ import (
 	"github.com/88250/gulu"
 	"github.com/gin-gonic/gin"
 	"github.com/siyuan-note/logging"
+	"github.com/siyuan-note/siyuan/kernel/apicontract"
 	"github.com/siyuan-note/siyuan/kernel/model"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
 
-func checkWorkspaceDir(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var checkWorkspaceDir = contractHandler(apicontract.SystemCheckWorkspaceDir, func(c *gin.Context, request apicontract.SystemPathRequest) (ret apicontract.Response[apicontract.SystemWorkspaceCheckData]) {
+	ret = apicontract.Success(apicontract.SystemWorkspaceCheckData{})
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	path := request.Path
+	if response := rejectMobileWorkspaceBaseDirResponse[apicontract.SystemWorkspaceCheckData](path); response != nil {
+		return *response
 	}
-
-	path := arg["path"].(string)
 	// 检查路径是否是分区根路径
 	if util.IsPartitionRootPath(path) {
-		ret.Code = -1
-		ret.Msg = model.Conf.Language(273)
-		ret.Data = map[string]interface{}{"closeTimeout": 7000}
+		ret = apicontract.FailureWithTimeout[apicontract.SystemWorkspaceCheckData](-1, model.Conf.Language(273), 7000)
 		return
 	}
 
@@ -55,147 +50,150 @@ func checkWorkspaceDir(c *gin.Context) {
 	if !util.IsWorkspaceDir(path) {
 		entries, err := os.ReadDir(path)
 		if err != nil {
-			ret.Code = -1
-			ret.Msg = fmt.Sprintf("read dir [%s] failed: %s", path, err)
+			ret = apicontract.Failure[apicontract.SystemWorkspaceCheckData](-1, fmt.Sprintf("read dir [%s] failed: %s", path, err))
 			return
 		}
 		if 0 < len(entries) {
-			ret.Code = -1
-			ret.Msg = model.Conf.Language(274)
-			ret.Data = map[string]interface{}{"closeTimeout": 7000}
+			ret = apicontract.FailureWithTimeout[apicontract.SystemWorkspaceCheckData](-1, model.Conf.Language(274), 7000)
 			return
 		}
 	}
 
 	if isInvalidWorkspacePath(path) {
-		ret.Code = -1
-		ret.Msg = "This workspace name is not allowed, please use another name"
+		ret = apicontract.Failure[apicontract.SystemWorkspaceCheckData](-1, "This workspace name is not allowed, please use another name")
 		return
 	}
 
 	if !gulu.File.IsExist(path) {
-		ret.Code = -1
-		ret.Msg = "This workspace does not exist"
+		ret = apicontract.Failure[apicontract.SystemWorkspaceCheckData](-1, "This workspace does not exist")
 		return
 	}
 
-	ret.Data = map[string]interface{}{
-		"isWorkspace": util.IsWorkspaceDir(path),
-	}
-}
+	ret = apicontract.Success(apicontract.SystemWorkspaceCheckData{IsWorkspace: util.IsWorkspaceDir(path)})
+	return
+})
 
-func createWorkspaceDir(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var createWorkspaceDir = contractHandler(apicontract.SystemCreateWorkspaceDir, func(c *gin.Context, request apicontract.SystemPathRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	absPath := arg["path"].(string)
+	absPath := request.Path
 	absPath = util.RemoveInvalid(absPath)
 	absPath = strings.TrimSpace(absPath)
+	if response := rejectMobileWorkspaceBaseDirResponse[apicontract.Null](absPath); response != nil {
+		return *response
+	}
 	if isInvalidWorkspacePath(absPath) {
-		ret.Code = -1
-		ret.Msg = "This workspace name is not allowed, please use another name"
+		ret = apicontract.Failure[apicontract.Null](-1, "This workspace name is not allowed, please use another name")
 		return
 	}
 
 	if !gulu.File.IsExist(absPath) {
 		if err := os.MkdirAll(absPath, 0755); err != nil {
-			ret.Code = -1
-			ret.Msg = fmt.Sprintf("create workspace dir [%s] failed: %s", absPath, err)
+			ret = apicontract.Failure[apicontract.Null](-1, fmt.Sprintf("create workspace dir [%s] failed: %s", absPath, err))
 			return
 		}
 	}
 
 	workspacePaths, err := util.ReadWorkspacePaths()
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.Null](-1, err.Error())
 		return
 	}
 
 	workspacePaths = append(workspacePaths, absPath)
 
 	if err = util.WriteWorkspacePaths(workspacePaths); err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.Null](-1, err.Error())
 		return
 	}
-}
+	return
+})
 
-func removeWorkspaceDir(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var removeWorkspaceDir = contractHandler(apicontract.SystemRemoveWorkspaceDir, func(c *gin.Context, request apicontract.SystemPathRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	path := arg["path"].(string)
+	path := request.Path
 
 	if util.IsWorkspaceLocked(path) || util.WorkspaceDir == path {
 		msg := "Cannot remove current workspace"
-		ret.Code = -1
-		ret.Msg = msg
-		ret.Data = map[string]interface{}{"closeTimeout": 3000}
+		ret = apicontract.FailureWithTimeout[apicontract.Null](-1, msg, 3000)
 		return
 	}
 
 	workspacePaths, err := util.ReadWorkspacePaths()
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.Null](-1, err.Error())
 		return
 	}
 
-	workspacePaths = gulu.Str.RemoveElem(workspacePaths, path)
+	workspacePaths = util.RemoveWorkspacePath(workspacePaths, path)
 
 	if err = util.WriteWorkspacePaths(workspacePaths); err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.Null](-1, err.Error())
 		return
 	}
-}
+	return
+})
 
-func removeWorkspaceDirPhysically(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var removeWorkspaceDirPhysically = contractHandler(apicontract.SystemRemoveWorkspaceDirPhysically, func(c *gin.Context, request apicontract.SystemPathRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
+	path := request.Path
+
+	// 硬边界：只允许删除已登记的工作空间目录或新建的空目录，禁止删除当前工作空间和任意路径
+	cleanPath, absErr := filepath.Abs(path)
+	if absErr != nil {
+		ret = apicontract.Failure[apicontract.Null](-1, absErr.Error())
 		return
 	}
-
-	path := arg["path"].(string)
-	if gulu.File.IsDir(path) {
-		err := os.RemoveAll(path)
-		if err != nil {
-			ret.Code = -1
-			ret.Msg = err.Error()
+	if response := rejectMobileWorkspaceBaseDirResponse[apicontract.Null](cleanPath); response != nil {
+		return *response
+	}
+	if util.IsWorkspaceLocked(cleanPath) || cleanPath == util.WorkspaceDir {
+		ret = apicontract.Failure[apicontract.Null](-1, "cannot remove opened workspace")
+		return
+	}
+	knownPaths, err := util.ReadWorkspacePaths()
+	if err != nil {
+		ret = apicontract.Failure[apicontract.Null](-1, err.Error())
+		return
+	}
+	remainingPaths := util.RemoveWorkspacePath(knownPaths, cleanPath)
+	if len(remainingPaths) == len(knownPaths) {
+		ret = apicontract.Failure[apicontract.Null](-1, "path is not a registered workspace")
+		return
+	}
+	if !util.IsWorkspaceDir(cleanPath) {
+		entries, readErr := os.ReadDir(cleanPath)
+		if readErr != nil {
+			ret = apicontract.Failure[apicontract.Null](-1, readErr.Error())
+			return
+		}
+		if 0 < len(entries) {
+			ret = apicontract.Failure[apicontract.Null](-1, "path is not a workspace directory")
 			return
 		}
 	}
 
-	logging.LogInfof("removed workspace [%s] physically", path)
-	if util.WorkspaceDir == path {
-		os.Exit(logging.ExitCodeOk)
+	if err := os.RemoveAll(cleanPath); err != nil {
+		ret = apicontract.Failure[apicontract.Null](-1, err.Error())
+		return
 	}
-}
+	if err = util.WriteWorkspacePaths(remainingPaths); err != nil {
+		ret = apicontract.Failure[apicontract.Null](-1, err.Error())
+		return
+	}
 
-type Workspace struct {
-	Path   string `json:"path"`
-	Closed bool   `json:"closed"`
-}
+	logging.LogInfof("removed workspace [%s] physically", path)
+	return
+})
 
-func getMobileWorkspaces(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+type Workspace = apicontract.SystemWorkspace
 
-	if util.ContainerIOS != util.Container && util.ContainerAndroid != util.Container && util.ContainerHarmony != util.Container {
+var getMobileWorkspaces = contractHandler(apicontract.SystemGetMobileWorkspaces, func(c *gin.Context, request apicontract.EmptyRequest) (ret apicontract.Response[[]string]) {
+	ret = apicontract.Success([]string(nil))
+
+	if !util.IsMobileContainer() {
 		return
 	}
 
@@ -203,12 +201,11 @@ func getMobileWorkspaces(c *gin.Context) {
 	dirs, err := os.ReadDir(root)
 	if err != nil {
 		logging.LogErrorf("read dir [%s] failed: %s", root, err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[[]string](-1, err.Error())
 		return
 	}
 
-	ret.Data = []string{}
+	ret = apicontract.Success([]string{})
 	var paths []string
 	for _, dir := range dirs {
 		if dir.IsDir() {
@@ -220,24 +217,23 @@ func getMobileWorkspaces(c *gin.Context) {
 			paths = append(paths, absPath)
 		}
 	}
-	ret.Data = paths
-}
+	ret = apicontract.Success(paths)
+	return
+})
 
-func getWorkspaces(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var getWorkspaces = contractHandler(apicontract.SystemGetWorkspaces, func(c *gin.Context, request apicontract.EmptyRequest) (ret apicontract.Response[[]*apicontract.SystemWorkspace]) {
+	ret = apicontract.Success([]*apicontract.SystemWorkspace(nil))
 
 	workspacePaths, err := util.ReadWorkspacePaths()
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[[]*apicontract.SystemWorkspace](-1, err.Error())
 		return
 	}
 
 	if role := model.GetGinContextRole(c); !model.IsValidRole(role, []model.Role{
 		model.RoleAdministrator,
 	}) {
-		ret.Data = []*Workspace{}
+		ret = apicontract.Success([]*Workspace{})
 		return
 	}
 
@@ -258,30 +254,24 @@ func getWorkspaces(c *gin.Context) {
 	})
 	workspaces = append(workspaces, openedWorkspaces...)
 	workspaces = append(workspaces, closedWorkspaces...)
-	ret.Data = workspaces
-}
+	ret = apicontract.Success(workspaces)
+	return
+})
 
-func setWorkspaceDir(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
+var setWorkspaceDir = contractHandler(apicontract.SystemSetWorkspaceDir, func(c *gin.Context, request apicontract.SystemPathRequest) (ret apicontract.Response[apicontract.Null]) {
+	ret = apicontract.Success(apicontract.Null{})
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	path := request.Path
+	if response := rejectMobileWorkspaceBaseDirResponse[apicontract.Null](path); response != nil {
+		return *response
 	}
-
-	path := arg["path"].(string)
 	if util.WorkspaceDir == path {
-		ret.Code = -1
-		ret.Msg = model.Conf.Language(78)
-		ret.Data = map[string]interface{}{"closeTimeout": 3000}
+		ret = apicontract.FailureWithTimeout[apicontract.Null](-1, model.Conf.Language(78), 3000)
 		return
 	}
 
 	if util.IsCloudDrivePath(path) {
-		ret.Code = -1
-		ret.Msg = model.Conf.Language(196)
-		ret.Data = map[string]interface{}{"closeTimeout": 7000}
+		ret = apicontract.FailureWithTimeout[apicontract.Null](-1, model.Conf.Language(196), 7000)
 		return
 	}
 
@@ -289,10 +279,8 @@ func setWorkspaceDir(c *gin.Context) {
 		// 改进判断工作空间路径实现 https://github.com/siyuan-note/siyuan/issues/7569
 		installDirLower := strings.ToLower(filepath.Dir(util.WorkingDir))
 		pathLower := strings.ToLower(path)
-		if strings.HasPrefix(pathLower, installDirLower) && (util.IsSubPath(installDirLower, pathLower) || filepath.Clean(installDirLower) == filepath.Clean(pathLower)) {
-			ret.Code = -1
-			ret.Msg = model.Conf.Language(98)
-			ret.Data = map[string]interface{}{"closeTimeout": 5000}
+		if strings.HasPrefix(pathLower, installDirLower) && (gulu.File.IsSubPath(installDirLower, pathLower) || filepath.Clean(installDirLower) == filepath.Clean(pathLower)) {
+			ret = apicontract.FailureWithTimeout[apicontract.Null](-1, model.Conf.Language(98), 5000)
 			return
 		}
 	}
@@ -302,9 +290,7 @@ func setWorkspaceDir(c *gin.Context) {
 	if !pathIsWorkspace {
 		for p := filepath.Dir(path); !util.IsPartitionRootPath(p); p = filepath.Dir(p) {
 			if util.IsWorkspaceDir(p) {
-				ret.Code = -1
-				ret.Msg = fmt.Sprintf(model.Conf.Language(256), path, p)
-				ret.Data = map[string]interface{}{"closeTimeout": 7000}
+				ret = apicontract.FailureWithTimeout[apicontract.Null](-1, fmt.Sprintf(model.Conf.Language(256), path, p), 7000)
 				return
 			}
 		}
@@ -312,30 +298,32 @@ func setWorkspaceDir(c *gin.Context) {
 
 	workspacePaths, err := util.ReadWorkspacePaths()
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.Null](-1, err.Error())
 		return
 	}
 
 	workspacePaths = append(workspacePaths, path)
-	workspacePaths = gulu.Str.RemoveDuplicatedElem(workspacePaths)
-	workspacePaths = gulu.Str.RemoveElem(workspacePaths, path)
+	workspacePaths = util.DeduplicateWorkspacePaths(workspacePaths)
+	workspacePaths = util.RemoveWorkspacePath(workspacePaths, path)
 	workspacePaths = append(workspacePaths, path) // 切换的工作空间固定放在最后一个
 
 	if err = util.WriteWorkspacePaths(workspacePaths); err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
+		ret = apicontract.Failure[apicontract.Null](-1, err.Error())
 		return
 	}
 
-	if util.ContainerAndroid == util.Container || util.ContainerIOS == util.Container || util.ContainerHarmony == util.Container {
+	if util.IsMobileContainer() {
 		util.PushMsg(model.Conf.Language(42), 1000*15)
 		time.Sleep(2 * time.Second)
 	}
-}
+	return
+})
 
 func isInvalidWorkspacePath(absPath string) bool {
 	if "" == absPath {
+		return true
+	}
+	if util.IsMobileWorkspaceBaseDir(absPath) {
 		return true
 	}
 	name := filepath.Base(absPath)
@@ -354,4 +342,23 @@ func isInvalidWorkspacePath(absPath string) bool {
 	}
 	toLower := strings.ToLower(name)
 	return gulu.Str.Contains(toLower, []string{"conf", "home", "data", "temp"})
+}
+
+func rejectMobileWorkspaceBaseDir(ret *gulu.Result, path string) bool {
+	if !util.IsMobileWorkspaceBaseDir(path) {
+		return false
+	}
+	ret.Code = -1
+	ret.Msg = model.Conf.Language(274)
+	ret.Data = map[string]any{"closeTimeout": 7000}
+	return true
+}
+
+func rejectMobileWorkspaceBaseDirResponse[Data any](path string) *apicontract.Response[Data] {
+	result := gulu.Ret.NewResult()
+	if !rejectMobileWorkspaceBaseDir(result, path) {
+		return nil
+	}
+	response := apicontract.FailureWithTimeout[Data](result.Code, result.Msg, 7000)
+	return &response
 }

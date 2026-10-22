@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -33,24 +33,31 @@ import (
 var assetsWatcher *fsnotify.Watcher
 
 func WatchAssets() {
-	if !isFileWatcherAvailable() {
+	if util.IsMobileContainer() {
 		return
 	}
 
-	go func() {
-		watchAssets()
-	}()
+	go watchAssets()
 }
 
 func watchAssets() {
+	CloseWatchAssets()
 	assetsDir := filepath.Join(util.DataDir, "assets")
-	if nil != assetsWatcher {
-		assetsWatcher.Close()
-	}
 
 	var err error
-	if assetsWatcher, err = fsnotify.NewWatcher(); err != nil {
+	assetsWatcher, err = fsnotify.NewWatcher()
+	if err != nil {
 		logging.LogErrorf("add assets watcher for folder [%s] failed: %s", assetsDir, err)
+		return
+	}
+
+	if !gulu.File.IsDir(assetsDir) {
+		os.MkdirAll(assetsDir, 0755)
+	}
+
+	if err = assetsWatcher.Add(assetsDir); err != nil {
+		logging.LogErrorf("add assets watcher for folder [%s] failed: %s", assetsDir, err)
+		CloseWatchAssets()
 		return
 	}
 
@@ -95,19 +102,11 @@ func watchAssets() {
 			}
 		}
 	}()
-
-	if !gulu.File.IsDir(assetsDir) {
-		os.MkdirAll(assetsDir, 0755)
-	}
-
-	if err = assetsWatcher.Add(assetsDir); err != nil {
-		logging.LogErrorf("add assets watcher for folder [%s] failed: %s", assetsDir, err)
-	}
-	//logging.LogInfof("added file watcher [%s]", assetsDir)
 }
 
 func CloseWatchAssets() {
 	if nil != assetsWatcher {
 		assetsWatcher.Close()
+		assetsWatcher = nil
 	}
 }

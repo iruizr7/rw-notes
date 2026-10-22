@@ -6,6 +6,8 @@ This is the product and delivery plan for RW Notes. It supersedes the earlier we
 
 This document distinguishes **agreed product decisions** from **proposed implementation choices** and **open decisions**. None of the target capabilities below should be read as already implemented. See [project-architecture.md](./project-architecture.md) for the current code and intended extension boundaries, and [name-and-look-and-feel.md](./name-and-look-and-feel.md) for branding.
 
+**Selected upstream baseline:** core and Android 3.8.8, with iOS commit `05280f32ba89705e3ba55c233037db02c93cdea8`. See [upstream-baseline.md](./upstream-baseline.md) for exact SHAs, provenance limits, branch policy and validation gates. Source alignment is an M0 prerequisite, not completion of M0.
+
 ## 1. Vision and Terms
 
 RW Notes aims to offer a Notion-like shared knowledge service built on SiYuan: multiple people and AI agents work in one organization's knowledge base, with near-realtime updates across the web, desktop, and mobile. Desktop and mobile retain useful offline operation. “Notion-like” describes the shared service experience; it does not require replacing SiYuan's editor, storage model, or UI.
@@ -69,7 +71,7 @@ Maintain a compatibility ledger recording touched upstream surfaces, rationale, 
 
 ## 4. Current Repository Assessment
 
-These observations describe the local baseline reviewed at commit `abba74f34`, not a claim about the latest upstream release.
+The table below is the **historical 3.5.8 assessment** reviewed at commit `abba74f34`. The selected baseline is now 3.8.8; M0 must refresh this inventory before using it as an implementation map. In particular, upstream now has typed API contracts, built-in MCP/agent facilities and revised configuration accessors. Their presence does not establish RW Notes organization permissions or offline collaboration.
 
 | Area | Existing foundation | Work required for v0 |
 | --- | --- | --- |
@@ -197,7 +199,7 @@ Implement in small increments, each leaving a demonstrable system. The sequence 
 
 | Milestone | Dependencies | Deliverables | Exit evidence |
 | --- | --- | --- | --- |
-| **M0 — Baseline and risky-path prototypes** | None | Record upstream base; inventory routes/config/mutations and inherited vendor services/endpoints; locate native app sources and build requirements; prototype two clients plus one agent editing online/offline; decide timestamp/granularity/history design; define load and latency targets. | Demonstrate concurrent edits, offline reconnect, displaced-version recovery, and one native client path without changing canonical storage. Record unresolved design decisions and implementation estimates. |
+| **M0 — Baseline and risky-path prototypes** | None | Pin and validate the selected 3.8.8 core/Android and iOS commit combination; refresh the historical 3.5.8 inventory; inventory routes/config/mutations and inherited vendor services/endpoints; locate native app sources and build requirements; prototype two clients plus one agent editing online/offline; decide timestamp/granularity/history design; define load and latency targets. | Demonstrate concurrent edits, offline reconnect, displaced-version recovery, and one native client path without changing canonical storage. Record unresolved design decisions and implementation estimates. |
 | **M1 — Organization and deployment boundary** | M0 topology decisions | Control-plane user/org/membership model; one kernel/volume per org; provisioning, routing, service health, backup skeleton; first identity-provider flow and admin/member UI; replace inherited vendor identity and entitlement dependencies. | Create two orgs; route each to isolated content; restart without losing membership; verify cross-org denial. Use admin-mediated provisioning or invite links if email delivery is deferred. |
 | **M2 — End-to-end identity and roles** | M1 | Kernel auth adapter; API/socket/static-route permission inventory; Admin/Write/Read enforcement; individual agent credentials; revocation and last-Admin protection; remove vendor-service routes, credentials, and background calls. | Exercise all three roles through web/API/MCP; verify private user state and secrets stay private, Read cannot mutate shared content, and removed identities cannot reconnect. |
 | **M3 — Personal state migration** | M2 | Scope config/storage keys; separate user/device state; personal notebook visibility; migration and rollback procedure. | Two users and two devices use distinct preferences with no cross-user leakage; Read can save preferences; hiding a notebook leaves it accessible to others. |
@@ -261,7 +263,7 @@ The vision, role names, offline-first requirement, timestamp-winner-with-history
 | Conflict granularity and compound operations | Block/field scope when compatible; explicit transactions for structural changes; validate before accepting document-level replacement. | M0 |
 | Timestamp authority, skew handling, and tie-breaks | Use recorded edit timestamps with a defined clock policy and stable secondary keys; retain base/dependency metadata for conflict detection. | M0 |
 | History retention, offline horizon, and journal placement | Durable recoverable versions and device queues outside rebuildable indexes; coordinate retention with stale-device resync. | M0 |
-| Native platform/release matrix | Desktop and mobile apps are required; choose OS targets, wrapper sources, signing/distribution route, and supported client versions. | M0 |
+| Native platform/release matrix | Android and iOS sources and the initial baseline are selected in [upstream-baseline.md](./upstream-baseline.md); HarmonyOS is out of scope. Confirm desktop OS targets, minimum OS versions, signing/distribution and supported client versions. | M0 |
 | Vendor-service replacement map | Remove inherited integrations; explicitly choose replacements or retire affected capabilities, preserving local content and documenting cloud-only data migration. | M0 inventory, M1–M2 service work, M6 client cleanup |
 | First identity provider and deployment stack | External identity/control plane; choose the smallest stack that covers human and agent access without rewriting the kernel. | M1 |
 | Account membership in multiple orgs | Independent memberships and caches; no multi-workspace org model. Confirm how much org-switching UX is needed for the pilot. | M1 |

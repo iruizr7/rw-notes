@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/88250/gulu"
@@ -85,7 +86,16 @@ func RemoveInvalidRetainCtrl(text string) (ret string) {
 	return
 }
 
-var NativeEmojiChars = map[string]bool{}
+var (
+	nativeEmojiChars     = map[string]bool{}
+	nativeEmojiCharsLock sync.RWMutex
+)
+
+func IsNativeEmoji(value string) bool {
+	nativeEmojiCharsLock.RLock()
+	defer nativeEmojiCharsLock.RUnlock()
+	return nativeEmojiChars[value]
+}
 
 func InitEmojiChars() {
 	builtConfPath := filepath.Join(AppearancePath, "emojis", "conf.json")
@@ -95,18 +105,21 @@ func InitEmojiChars() {
 		return
 	}
 
-	var conf []map[string]interface{}
+	var conf []map[string]any
 	if err = gulu.JSON.UnmarshalJSON(data, &conf); err != nil {
 		logging.LogErrorf("unmarshal emojis conf.json failed: %s", err)
 		return
 	}
 
+	chars := map[string]bool{}
 	for _, emoji := range conf {
-		items := emoji["items"].([]interface{})
+		items := emoji["items"].([]any)
 		for _, item := range items {
-			e := item.(map[string]interface{})
-			NativeEmojiChars[e["unicode"].(string)] = true
+			e := item.(map[string]any)
+			chars[e["unicode"].(string)] = true
 		}
 	}
-	return
+	nativeEmojiCharsLock.Lock()
+	nativeEmojiChars = chars
+	nativeEmojiCharsLock.Unlock()
 }

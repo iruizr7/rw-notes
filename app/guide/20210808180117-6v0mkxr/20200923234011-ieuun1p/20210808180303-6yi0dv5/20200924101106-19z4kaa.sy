@@ -6,7 +6,7 @@
 		"id": "20200924101106-19z4kaa",
 		"title": "What is a Content Block",
 		"type": "doc",
-		"updated": "20230419153642"
+		"updated": "20261016202856"
 	},
 	"Children": [
 		{
@@ -14,7 +14,8 @@
 			"Type": "NodeHeading",
 			"HeadingLevel": 2,
 			"Properties": {
-				"id": "20210118101709-5a7bzl0"
+				"id": "20210118101709-5a7bzl0",
+				"updated": "20261016111305"
 			},
 			"Children": [
 				{
@@ -32,7 +33,7 @@
 			"Type": "NodeParagraph",
 			"Properties": {
 				"id": "20210118101709-9lqij9d",
-				"updated": "20220623201341"
+				"updated": "20261016111305"
 			},
 			"Children": [
 				{
@@ -51,11 +52,20 @@
 				{
 					"Type": "NodeTextMark",
 					"TextMarkType": "code",
-					"TextMarkTextContent": "202008250000-a1b2c3d"
+					"TextMarkTextContent": "20200825000000-a1b2c3d"
 				},
 				{
 					"Type": "NodeText",
-					"Data": ", consisting of time and 7 random characters."
+					"Data": ", consisting of a 14-digit timestamp ("
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "code",
+					"TextMarkTextContent": "YYYYMMDDHHMMSS"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "), a hyphen, and 7 random lowercase letters or digits."
 				}
 			]
 		},
@@ -139,7 +149,8 @@
 			"Type": "NodeHeading",
 			"HeadingLevel": 2,
 			"Properties": {
-				"id": "20210104091535-sbufc1h"
+				"id": "20210104091535-sbufc1h",
+				"updated": "20261016202856"
 			},
 			"Children": [
 				{
@@ -157,26 +168,23 @@
 			"Type": "NodeParagraph",
 			"Properties": {
 				"id": "20210104091535-2ybzqz1",
-				"updated": "20220623201418"
+				"updated": "20260809232000"
 			},
 			"Children": [
 				{
 					"Type": "NodeText",
-					"Data": "A document is a combination of some content blocks, and the content block is the basic unit. This is like Lego bricks, which can be combined using different basic modules. "
+					"Data": "A document is composed of content blocks. Some content blocks can contain other blocks and are therefore called container blocks. For the complete list and containment rules, see "
 				},
 				{
 					"Type": "NodeTextMark",
-					"TextMarkType": "tag",
-					"TextMarkTextContent": "Note"
+					"TextMarkType": "block-ref",
+					"TextMarkBlockRefID": "20200924101225-k254i8g",
+					"TextMarkBlockRefSubtype": "d",
+					"TextMarkTextContent": "Content Block Type"
 				},
 				{
 					"Type": "NodeText",
-					"Data": ": the document itself is also a kind of content block. More precisely, the three content blocks of document block, list block, and block reference block are container blocks, and they can contain any other types of content blocks. "
-				},
-				{
-					"Type": "NodeTextMark",
-					"TextMarkType": "tag",
-					"TextMarkTextContent": "Content Block/Combine"
+					"Data": "."
 				}
 			]
 		},
@@ -184,7 +192,8 @@
 			"ID": "20210104091535-11dba0r",
 			"Type": "NodeParagraph",
 			"Properties": {
-				"id": "20210104091535-11dba0r"
+				"id": "20210104091535-11dba0r",
+				"updated": "20261016202856"
 			},
 			"Children": [
 				{
@@ -200,7 +209,7 @@
 				},
 				{
 					"Type": "NodeText",
-					"Data": " . Logically, there is no page concept, which reduces unnecessary burdens in use and allows users to focus on the content block."
+					"Data": ". Logically, there is no page concept, which reduces unnecessary burdens in use and allows users to focus on the content block."
 				}
 			]
 		},
@@ -209,16 +218,13 @@
 			"Type": "NodeHeading",
 			"HeadingLevel": 2,
 			"Properties": {
-				"id": "20210118104710-tmyyac4"
+				"id": "20210118104710-tmyyac4",
+				"updated": "20261016013311"
 			},
 			"Children": [
 				{
-					"Type": "NodeHeadingC8hMarker",
-					"Data": "## "
-				},
-				{
 					"Type": "NodeText",
-					"Data": "Naming and memo"
+					"Data": "Names, aliases, and memos"
 				}
 			]
 		},
@@ -252,12 +258,12 @@
 			"Type": "NodeParagraph",
 			"Properties": {
 				"id": "20210118104710-2sb91b3",
-				"updated": "20210512160955"
+				"updated": "20261016013311"
 			},
 			"Children": [
 				{
 					"Type": "NodeText",
-					"Data": "After opening the options for displaying bookmarks, naming, and alias identification in the "
+					"Data": "Enable "
 				},
 				{
 					"Type": "NodeTextMark",
@@ -275,7 +281,25 @@
 				},
 				{
 					"Type": "NodeText",
-					"Data": ", the named content block will be displayed with a frame in the editor. If you name and memo the document block, when the mouse is hovering over the doc tree document, the relevant naming and memo of the document will appear."
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "Behavior"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "Content block corner icon"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " to display names, aliases, and memos in the editor. When a document block has a name or memo, hovering over it in the document tree displays that information."
 				}
 			]
 		},

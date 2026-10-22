@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -18,45 +18,160 @@ package api
 
 import (
 	"errors"
-	"net/http"
+	"fmt"
 
 	"github.com/88250/gulu"
 	"github.com/88250/lute"
 	"github.com/88250/lute/ast"
-	"github.com/88250/lute/parse"
 	"github.com/gin-gonic/gin"
-	"github.com/siyuan-note/logging"
+	"github.com/siyuan-note/siyuan/kernel/apicontract"
 	"github.com/siyuan-note/siyuan/kernel/filesys"
 	"github.com/siyuan-note/siyuan/kernel/model"
 	"github.com/siyuan-note/siyuan/kernel/treenode"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
 
-func moveOutlineHeading(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+func buildUpdatedTaskListItemBlockDOM(id, marker string, luteEngine *lute.Lute) (data string, err error) {
+	block, err := model.GetBlock(id, nil)
+	if err != nil {
+		return "", errors.New("get block failed: " + err.Error())
 	}
 
-	id := arg["id"].(string)
+	if "NodeListItem" != block.Type {
+		return "", errors.New("block is not a list item")
+	}
+
+	tree, err := filesys.LoadTree(block.Box, block.Path, luteEngine)
+	if err != nil {
+		return "", errors.New("load tree failed: " + err.Error())
+	}
+
+	li := treenode.GetNodeInTree(tree, id)
+	if li == nil {
+		return "", errors.New("block not found")
+	}
+
+	if 3 != li.ListData.Typ {
+		return "", errors.New("block is not a task list item")
+	}
+
+	if 1 != len(marker) {
+		return "", errors.New("task list item marker length should be 1")
+	}
+
+	liMarker := marker[0]
+	if '[' == liMarker || ']' == liMarker {
+		return "", errors.New("task list item marker can not be [ or ]")
+	}
+
+	markerNode := li.ChildByType(ast.NodeTaskListItemMarker)
+	if nil == markerNode {
+		return "", errors.New("task list item marker not found")
+	}
+
+	markerNode.TaskListItemMarker = liMarker
+	markerNode.TaskListItemChecked = ' ' != markerNode.TaskListItemMarker
+
+	treenode.RefreshUpdated(li)
+
+	return luteEngine.RenderNodeBlockDOM(li), nil
+}
+
+var updateTaskListItemMarker = contractHandler(apicontract.UpdateTaskListItemMarker, func(c *gin.Context, request apicontract.TaskListMarkerRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
+	ret := gulu.Ret.NewResult()
+
+	id, marker := request.ID, request.Marker
 	if util.InvalidIDPattern(id, ret) {
-		return
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
+	}
+
+	luteEngine := util.NewLute()
+	data, err := buildUpdatedTaskListItemBlockDOM(id, marker, luteEngine)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
+	}
+
+	transactions := []*model.Transaction{
+		{
+			DoOperations: []*model.Operation{
+				{Action: "update", ID: id, Data: data},
+			},
+		},
+	}
+
+	if err := model.PerformBlockTransactions(transactions); err != nil {
+		return apicontract.Failure[[]*apicontract.BlockTransaction](-1, err.Error())
+	}
+
+	broadcastTransactions(transactions)
+	return blockTransactionsResponse(transactions)
+})
+
+var batchUpdateTaskListItemMarker = contractHandler(apicontract.BatchUpdateTaskListItemMarker, func(c *gin.Context, request apicontract.BatchTaskListMarkerRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
+	ret := gulu.Ret.NewResult()
+
+	itemsArg := request.Items
+	if len(itemsArg) == 0 {
+		return apicontract.Failure[[]*apicontract.BlockTransaction](-1, "Field [items] must not be empty")
+	}
+	luteEngine := util.NewLute()
+	idToMarker := make(map[string]string, len(itemsArg))
+	idsInOrder := make([]string, 0, len(itemsArg))
+	for _, itemArg := range itemsArg {
+		id, marker := itemArg.ID, itemArg.Marker
+		if util.InvalidIDPattern(id, ret) {
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
+		}
+		// 相同 id 保留最后一个 marker
+		idToMarker[id] = marker
+		idsInOrder = append(idsInOrder, id)
+	}
+
+	ids := gulu.Str.RemoveDuplicatedElem(idsInOrder)
+	ops := make([]*model.Operation, 0, len(ids))
+	for _, id := range ids {
+		data, err := buildUpdatedTaskListItemBlockDOM(id, idToMarker[id], luteEngine)
+		if err != nil {
+			ret.Code = -1
+			ret.Msg = err.Error()
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
+		}
+
+		ops = append(ops, &model.Operation{Action: "update", ID: id, Data: data})
+	}
+
+	tx := &model.Transaction{DoOperations: ops}
+	transactions := []*model.Transaction{tx}
+
+	if err := model.PerformBlockTransactions(transactions); err != nil {
+		return apicontract.Failure[[]*apicontract.BlockTransaction](-1, err.Error())
+	}
+
+	broadcastTransactions(transactions)
+	return blockTransactionsResponse(transactions)
+})
+
+var moveOutlineHeading = contractHandler(apicontract.MoveOutlineHeading, func(c *gin.Context, request apicontract.MoveBlockRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
+	ret := gulu.Ret.NewResult()
+
+	id := request.ID
+	if util.InvalidIDPattern(id, ret) {
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
 	}
 
 	var parentID, previousID string
-	if nil != arg["parentID"] {
-		parentID = arg["parentID"].(string)
+	if request.ParentID != nil {
+		parentID = *request.ParentID
 		if "" != parentID && util.InvalidIDPattern(parentID, ret) {
-			return
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
 		}
 	}
-	if nil != arg["previousID"] {
-		previousID = arg["previousID"].(string)
+	if request.PreviousID != nil {
+		previousID = *request.PreviousID
 		if "" != previousID && util.InvalidIDPattern(previousID, ret) {
-			return
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
 		}
 	}
 
@@ -73,27 +188,20 @@ func moveOutlineHeading(c *gin.Context) {
 		},
 	}
 
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
-
-	ret.Data = transactions
-	broadcastTransactions(transactions)
-}
-
-func appendDailyNoteBlock(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	if err := model.PerformBlockTransactions(transactions); err != nil {
+		return apicontract.Failure[[]*apicontract.BlockTransaction](-1, err.Error())
 	}
 
-	data := arg["data"].(string)
-	dataType := arg["dataType"].(string)
-	boxID := arg["notebook"].(string)
+	broadcastTransactions(transactions)
+	return blockTransactionsResponse(transactions)
+})
+
+var appendDailyNoteBlock = contractHandler(apicontract.AppendDailyNoteBlock, func(c *gin.Context, request apicontract.DailyNoteBlockRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
+	ret := gulu.Ret.NewResult()
+
+	data, dataType, boxID := request.Data, request.DataType, request.Notebook
 	if util.InvalidIDPattern(boxID, ret) {
-		return
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
 	}
 	if "markdown" == dataType {
 		luteEngine := util.NewLute()
@@ -102,7 +210,7 @@ func appendDailyNoteBlock(c *gin.Context) {
 		if err != nil {
 			ret.Code = -1
 			ret.Msg = "data block DOM failed: " + err.Error()
-			return
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
 		}
 	}
 
@@ -110,7 +218,7 @@ func appendDailyNoteBlock(c *gin.Context) {
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = "create daily note failed: " + err.Error()
-		return
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
 	}
 
 	parentID := util.GetTreeID(p)
@@ -126,27 +234,20 @@ func appendDailyNoteBlock(c *gin.Context) {
 		},
 	}
 
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
-
-	ret.Data = transactions
-	broadcastTransactions(transactions)
-}
-
-func prependDailyNoteBlock(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	if err := model.PerformBlockTransactions(transactions); err != nil {
+		return apicontract.Failure[[]*apicontract.BlockTransaction](-1, err.Error())
 	}
 
-	data := arg["data"].(string)
-	dataType := arg["dataType"].(string)
-	boxID := arg["notebook"].(string)
+	broadcastTransactions(transactions)
+	return blockTransactionsResponse(transactions)
+})
+
+var prependDailyNoteBlock = contractHandler(apicontract.PrependDailyNoteBlock, func(c *gin.Context, request apicontract.DailyNoteBlockRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
+	ret := gulu.Ret.NewResult()
+
+	data, dataType, boxID := request.Data, request.DataType, request.Notebook
 	if util.InvalidIDPattern(boxID, ret) {
-		return
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
 	}
 	if "markdown" == dataType {
 		luteEngine := util.NewLute()
@@ -155,7 +256,7 @@ func prependDailyNoteBlock(c *gin.Context) {
 		if err != nil {
 			ret.Code = -1
 			ret.Msg = "data block DOM failed: " + err.Error()
-			return
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
 		}
 	}
 
@@ -163,7 +264,7 @@ func prependDailyNoteBlock(c *gin.Context) {
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = "create daily note failed: " + err.Error()
-		return
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
 	}
 
 	parentID := util.GetTreeID(p)
@@ -179,38 +280,33 @@ func prependDailyNoteBlock(c *gin.Context) {
 		},
 	}
 
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
-
-	ret.Data = transactions
-	broadcastTransactions(transactions)
-}
-
-func unfoldBlock(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	if err := model.PerformBlockTransactions(transactions); err != nil {
+		return apicontract.Failure[[]*apicontract.BlockTransaction](-1, err.Error())
 	}
 
-	id := arg["id"].(string)
+	broadcastTransactions(transactions)
+	return blockTransactionsResponse(transactions)
+})
+
+var unfoldBlock = contractHandler(apicontract.UnfoldBlock, func(c *gin.Context, request apicontract.BlockIDRequest) apicontract.Response[apicontract.Null] {
+	ret := gulu.Ret.NewResult()
+
+	id := request.ID
 	if util.InvalidIDPattern(id, ret) {
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
 
 	bt := treenode.GetBlockTree(id)
 	if nil == bt {
 		ret.Code = -1
 		ret.Msg = "block tree not found [id=" + id + "]"
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
 
 	if bt.Type == "d" {
 		ret.Code = -1
 		ret.Msg = "document can not be unfolded"
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
 
 	var transactions []*model.Transaction
@@ -226,7 +322,7 @@ func unfoldBlock(c *gin.Context) {
 			},
 		}
 	} else {
-		data, _ := gulu.JSON.MarshalJSON(map[string]interface{}{"fold": ""})
+		data, _ := gulu.JSON.MarshalJSON(map[string]any{"fold": ""})
 		transactions = []*model.Transaction{
 			{
 				DoOperations: []*model.Operation{
@@ -240,37 +336,33 @@ func unfoldBlock(c *gin.Context) {
 		}
 	}
 
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
-
-	broadcastTransactions(transactions)
-}
-
-func foldBlock(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	if err := model.PerformBlockTransactions(transactions); err != nil {
+		return apicontract.Failure[apicontract.Null](-1, err.Error())
 	}
 
-	id := arg["id"].(string)
+	broadcastTransactions(transactions)
+	return apicontract.Success(apicontract.Null{})
+})
+
+var foldBlock = contractHandler(apicontract.FoldBlock, func(c *gin.Context, request apicontract.BlockIDRequest) apicontract.Response[apicontract.Null] {
+	ret := gulu.Ret.NewResult()
+
+	id := request.ID
 	if util.InvalidIDPattern(id, ret) {
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
 
 	bt := treenode.GetBlockTree(id)
 	if nil == bt {
 		ret.Code = -1
 		ret.Msg = "block tree not found [id=" + id + "]"
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
 
 	if bt.Type == "d" {
 		ret.Code = -1
 		ret.Msg = "document can not be folded"
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
 
 	var transactions []*model.Transaction
@@ -286,7 +378,7 @@ func foldBlock(c *gin.Context) {
 			},
 		}
 	} else {
-		data, _ := gulu.JSON.MarshalJSON(map[string]interface{}{"fold": "1"})
+		data, _ := gulu.JSON.MarshalJSON(map[string]any{"fold": "1"})
 		transactions = []*model.Transaction{
 			{
 				DoOperations: []*model.Operation{
@@ -300,51 +392,52 @@ func foldBlock(c *gin.Context) {
 		}
 	}
 
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
-
-	broadcastTransactions(transactions)
-}
-
-func moveBlock(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	if err := model.PerformBlockTransactions(transactions); err != nil {
+		return apicontract.Failure[apicontract.Null](-1, err.Error())
 	}
 
-	id := arg["id"].(string)
+	broadcastTransactions(transactions)
+	return apicontract.Success(apicontract.Null{})
+})
+
+var moveBlock = contractHandler(apicontract.MoveBlock, func(c *gin.Context, request apicontract.MoveBlockRequest) apicontract.Response[apicontract.Null] {
+	ret := gulu.Ret.NewResult()
+
+	id := request.ID
 	if util.InvalidIDPattern(id, ret) {
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
 
 	currentBt := treenode.GetBlockTree(id)
 	if nil == currentBt {
 		ret.Code = -1
 		ret.Msg = "block not found [id=" + id + "]"
-		return
+		return contractFailure[apicontract.Null](ret)
 	}
 
 	var parentID, previousID string
-	if nil != arg["parentID"] {
-		parentID = arg["parentID"].(string)
+	if request.ParentID != nil {
+		parentID = *request.ParentID
 		if "" != parentID && util.InvalidIDPattern(parentID, ret) {
-			return
+			return contractFailure[apicontract.Null](ret)
 		}
 	}
-	if nil != arg["previousID"] {
-		previousID = arg["previousID"].(string)
+	if request.PreviousID != nil {
+		previousID = *request.PreviousID
 		if "" != previousID && util.InvalidIDPattern(previousID, ret) {
-			return
+			return contractFailure[apicontract.Null](ret)
 		}
 
 		// Check the validity of the API `moveBlock` parameter `previousID` https://github.com/siyuan-note/siyuan/issues/8007
-		if bt := treenode.GetBlockTree(previousID); nil == bt || "d" == bt.Type {
+		// 文档与不存在的块需要分别提示：文档 ID 格式合法但不是同级锚点，块不存在则是调用方传了失效 ID。
+		if bt := treenode.GetBlockTree(previousID); nil == bt {
+			ret.Code = -1
+			ret.Msg = "`previousID` block not found"
+			return contractFailure[apicontract.Null](ret)
+		} else if "d" == bt.Type {
 			ret.Code = -1
 			ret.Msg = "`previousID` can not be the ID of a document"
-			return
+			return contractFailure[apicontract.Null](ret)
 		}
 	}
 
@@ -358,7 +451,21 @@ func moveBlock(c *gin.Context) {
 	if nil == targetBt {
 		ret.Code = -1
 		ret.Msg = "target block not found [id=" + parentID + "]"
-		return
+		return contractFailure[apicontract.Null](ret)
+	}
+
+	// 仅靠 parentID 定位目标时（无 previousID），目标必须是容器块，否则非法嵌套
+	if "" == previousID && "" != parentID {
+		if err := treenode.CheckListItemNesting(parentID, id); err != nil {
+			ret.Code = -1
+			ret.Msg = err.Error()
+			return contractFailure[apicontract.Null](ret)
+		}
+		if err := treenode.CheckContainerParent(parentID); err != nil {
+			ret.Code = -1
+			ret.Msg = err.Error()
+			return contractFailure[apicontract.Null](ret)
+		}
 	}
 
 	transactions := []*model.Transaction{
@@ -374,396 +481,282 @@ func moveBlock(c *gin.Context) {
 		},
 	}
 
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
+	if err := model.PerformTransactionSync(transactions[0]); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return contractFailure[apicontract.Null](ret)
+	}
 
 	model.ReloadProtyle(currentBt.RootID)
 	if currentBt.RootID != targetBt.RootID {
 		model.ReloadProtyle(targetBt.RootID)
 	}
-}
+	return apicontract.Success(apicontract.Null{})
+})
 
-func appendBlock(c *gin.Context) {
+var appendBlock = contractHandler(apicontract.AppendBlock, func(c *gin.Context, request apicontract.AppendBlockRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	data := arg["data"].(string)
-	dataType := arg["dataType"].(string)
-	parentID := arg["parentID"].(string)
-	if util.InvalidIDPattern(parentID, ret) {
-		return
-	}
-	if "markdown" == dataType {
-		luteEngine := util.NewLute()
-		var err error
-		data, err = dataBlockDOM(data, luteEngine)
-		if err != nil {
-			ret.Code = -1
-			ret.Msg = "data block DOM failed: " + err.Error()
-			return
-		}
-	}
-
-	transactions := []*model.Transaction{
-		{
-			DoOperations: []*model.Operation{
-				{
-					Action:   "appendInsert",
-					Data:     data,
-					ParentID: parentID,
-				},
-			},
-		},
-	}
-
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
-
-	ret.Data = transactions
-	broadcastTransactions(transactions)
-}
-
-func batchAppendBlock(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	blocksArg := arg["blocks"].([]interface{})
-	var transactions []*model.Transaction
-	luteEngine := util.NewLute()
-	for _, blockArg := range blocksArg {
-		blockMap := blockArg.(map[string]interface{})
-		data := blockMap["data"].(string)
-		dataType := blockMap["dataType"].(string)
-		parentID := blockMap["parentID"].(string)
-		if util.InvalidIDPattern(parentID, ret) {
-			return
-		}
-		if "markdown" == dataType {
-			var err error
-			data, err = dataBlockDOM(data, luteEngine)
-			if err != nil {
-				ret.Code = -1
-				ret.Msg = "data block DOM failed: " + err.Error()
-				return
-			}
-		}
-
-		transactions = append(transactions, &model.Transaction{
-			DoOperations: []*model.Operation{
-				{
-					Action:   "appendInsert",
-					Data:     data,
-					ParentID: parentID,
-				},
-			},
-		})
-	}
-
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
-
-	ret.Data = transactions
-	broadcastTransactions(transactions)
-}
-
-func prependBlock(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	data := arg["data"].(string)
-	dataType := arg["dataType"].(string)
-	parentID := arg["parentID"].(string)
-	if util.InvalidIDPattern(parentID, ret) {
-		return
-	}
-	if "markdown" == dataType {
-		luteEngine := util.NewLute()
-		var err error
-		data, err = dataBlockDOM(data, luteEngine)
-		if err != nil {
-			ret.Code = -1
-			ret.Msg = "data block DOM failed: " + err.Error()
-			return
-		}
-	}
-
-	transactions := []*model.Transaction{
-		{
-			DoOperations: []*model.Operation{
-				{
-					Action:   "prependInsert",
-					Data:     data,
-					ParentID: parentID,
-				},
-			},
-		},
-	}
-
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
-
-	ret.Data = transactions
-	broadcastTransactions(transactions)
-}
-
-func batchPrependBlock(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	blocksArg := arg["blocks"].([]interface{})
-	var transactions []*model.Transaction
-	luteEngine := util.NewLute()
-	for _, blockArg := range blocksArg {
-		blockMap := blockArg.(map[string]interface{})
-		data := blockMap["data"].(string)
-		dataType := blockMap["dataType"].(string)
-		parentID := blockMap["parentID"].(string)
-		if util.InvalidIDPattern(parentID, ret) {
-			return
-		}
-		if "markdown" == dataType {
-			var err error
-			data, err = dataBlockDOM(data, luteEngine)
-			if err != nil {
-				ret.Code = -1
-				ret.Msg = "data block DOM failed: " + err.Error()
-				return
-			}
-		}
-
-		transactions = append(transactions, &model.Transaction{
-			DoOperations: []*model.Operation{
-				{
-					Action:   "prependInsert",
-					Data:     data,
-					ParentID: parentID,
-				},
-			},
-		})
-	}
-
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
-
-	ret.Data = transactions
-	broadcastTransactions(transactions)
-}
-
-func insertBlock(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	data := arg["data"].(string)
-	dataType := arg["dataType"].(string)
-	var parentID, previousID, nextID string
-	if nil != arg["parentID"] {
-		parentID = arg["parentID"].(string)
-		if "" != parentID && util.InvalidIDPattern(parentID, ret) {
-			return
-		}
-	}
-	if nil != arg["previousID"] {
-		previousID = arg["previousID"].(string)
-		if "" != previousID && util.InvalidIDPattern(previousID, ret) {
-			return
-		}
-	}
-	if nil != arg["nextID"] {
-		nextID = arg["nextID"].(string)
-		if "" != nextID && util.InvalidIDPattern(nextID, ret) {
-			return
-		}
-	}
-
-	if "markdown" == dataType {
-		luteEngine := util.NewLute()
-		var err error
-		data, err = dataBlockDOM(data, luteEngine)
-		if err != nil {
-			ret.Code = -1
-			ret.Msg = "data block DOM failed: " + err.Error()
-			return
-		}
-	}
-
-	transactions := []*model.Transaction{
-		{
-			DoOperations: []*model.Operation{
-				{
-					Action:     "insert",
-					Data:       data,
-					ParentID:   parentID,
-					PreviousID: previousID,
-					NextID:     nextID,
-				},
-			},
-		},
-	}
-
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
-
-	ret.Data = transactions
-	broadcastTransactions(transactions)
-}
-
-func updateBlock(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	data := arg["data"].(string)
-	dataType := arg["dataType"].(string)
-	id := arg["id"].(string)
-	if util.InvalidIDPattern(id, ret) {
-		return
-	}
-
-	luteEngine := util.NewLute()
-	if "markdown" == dataType {
-		var err error
-		data, err = dataBlockDOM(data, luteEngine)
-		if err != nil {
-			ret.Code = -1
-			ret.Msg = "data block DOM failed: " + err.Error()
-			return
-		}
-	}
-	tree := luteEngine.BlockDOM2Tree(data)
-	if nil == tree || nil == tree.Root || nil == tree.Root.FirstChild {
+	data, dataType, parentID := request.Data, request.DataType, request.ParentID
+	if dataType != "markdown" && dataType != "dom" {
 		ret.Code = -1
-		ret.Msg = "parse tree failed"
-		return
+		ret.Msg = "dataType must be markdown or dom"
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
+	}
+	if util.InvalidIDPattern(parentID, ret) {
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
+	}
+	if "markdown" == dataType {
+		luteEngine := util.NewLute()
+		var err error
+		data, err = dataBlockDOM(data, luteEngine)
+		if err != nil {
+			ret.Code = -1
+			ret.Msg = "data block DOM failed: " + err.Error()
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
+		}
 	}
 
-	block, err := model.GetBlock(id, nil)
+	transactions, err := model.PerformBlockOperation(&model.Operation{
+		Action:   "appendInsert",
+		Data:     data,
+		ParentID: parentID,
+	})
 	if err != nil {
 		ret.Code = -1
-		ret.Msg = "get block failed: " + err.Error()
-		return
+		ret.Msg = err.Error()
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
 	}
 
-	var transactions []*model.Transaction
-	if "NodeDocument" == block.Type {
-		oldTree, err := filesys.LoadTree(block.Box, block.Path, luteEngine)
-		if err != nil {
-			ret.Code = -1
-			ret.Msg = "load tree failed: " + err.Error()
-			return
-		}
-		var toRemoves []*ast.Node
-		var ops []*model.Operation
-		for n := oldTree.Root.FirstChild; nil != n; n = n.Next {
-			toRemoves = append(toRemoves, n)
-			ops = append(ops, &model.Operation{Action: "delete", ID: n.ID, Data: map[string]interface{}{
-				"createEmptyParagraph": false, // 清空文档后前端不要创建空段落
-			}})
-		}
-		for _, n := range toRemoves {
-			n.Unlink()
-		}
-		ops = append(ops, &model.Operation{Action: "appendInsert", Data: data, ParentID: id})
-		transactions = append(transactions, &model.Transaction{
-			DoOperations: ops,
-		})
-	} else {
-		if "NodeListItem" == block.Type && ast.NodeList == tree.Root.FirstChild.Type {
-			// 使用 API `api/block/updateBlock` 更新列表项时渲染错误 https://github.com/siyuan-note/siyuan/issues/4658
-			tree.Root.AppendChild(tree.Root.FirstChild.FirstChild) // 将列表下的第一个列表项移到文档结尾，移动以后根下面直接挂列表项，渲染器可以正常工作
-			tree.Root.FirstChild.Unlink()                          // 删除列表
-			tree.Root.FirstChild.Unlink()                          // 继续删除列表 IAL
-		}
-
-		if nil != tree.Root.FirstChild {
-			tree.Root.FirstChild.SetIALAttr("id", id)
-		} else {
-			logging.LogWarnf("tree root has no child node, append empty paragraph node")
-			tree.Root.AppendChild(treenode.NewParagraph(id))
-		}
-
-		data = luteEngine.Tree2BlockDOM(tree, luteEngine.RenderOptions, luteEngine.ParseOptions)
-		transactions = []*model.Transaction{
-			{
-				DoOperations: []*model.Operation{
-					{
-						Action: "update",
-						ID:     id,
-						Data:   data,
-					},
-				},
-			},
-		}
-	}
-
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
-
-	ret.Data = transactions
 	broadcastTransactions(transactions)
-}
+	return blockTransactionsResponse(transactions)
+})
 
-func batchInsertBlock(c *gin.Context) {
+var batchAppendBlock = contractHandler(apicontract.BatchAppendBlock, func(c *gin.Context, request apicontract.BatchParentBlockRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	blocksArg := arg["blocks"].([]interface{})
+	blocksArg := request.Blocks
 	var transactions []*model.Transaction
 	luteEngine := util.NewLute()
 	for _, blockArg := range blocksArg {
-		blockMap := blockArg.(map[string]interface{})
-		data := blockMap["data"].(string)
-		dataType := blockMap["dataType"].(string)
-		var parentID, previousID, nextID string
-		if nil != blockMap["parentID"] {
-			parentID = blockMap["parentID"].(string)
-			if "" != parentID && util.InvalidIDPattern(parentID, ret) {
-				return
+		data := blockArg.Data
+		dataType := blockArg.DataType
+		parentID := blockArg.ParentID
+		if util.InvalidIDPattern(parentID, ret) {
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
+		}
+		// append 只用 parentID 定位目标，目标必须是容器块，否则非法嵌套
+		if err := treenode.CheckContainerParent(parentID); err != nil {
+			ret.Code = -1
+			ret.Msg = err.Error()
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
+		}
+		if "markdown" == dataType {
+			var err error
+			data, err = dataBlockDOM(data, luteEngine)
+			if err != nil {
+				ret.Code = -1
+				ret.Msg = "data block DOM failed: " + err.Error()
+				return contractFailure[[]*apicontract.BlockTransaction](ret)
 			}
 		}
-		if nil != blockMap["previousID"] {
-			previousID = blockMap["previousID"].(string)
-			if "" != previousID && util.InvalidIDPattern(previousID, ret) {
-				return
+
+		transactions = append(transactions, &model.Transaction{
+			DoOperations: []*model.Operation{
+				{
+					Action:   "appendInsert",
+					Data:     data,
+					ParentID: parentID,
+				},
+			},
+		})
+	}
+
+	if err := model.PerformBlockTransactions(transactions); err != nil {
+		return apicontract.Failure[[]*apicontract.BlockTransaction](-1, err.Error())
+	}
+
+	broadcastTransactions(transactions)
+	return blockTransactionsResponse(transactions)
+})
+
+var prependBlock = contractHandler(apicontract.PrependBlock, func(c *gin.Context, request apicontract.PrependBlockRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
+	ret := gulu.Ret.NewResult()
+
+	data, dataType, parentID := request.Data, request.DataType, request.ParentID
+	if util.InvalidIDPattern(parentID, ret) {
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
+	}
+	// prepend 只用 parentID 定位目标，目标必须是容器块，否则非法嵌套
+	if err := treenode.CheckContainerParent(parentID); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
+	}
+	if "markdown" == dataType {
+		luteEngine := util.NewLute()
+		var err error
+		data, err = dataBlockDOM(data, luteEngine)
+		if err != nil {
+			ret.Code = -1
+			ret.Msg = "data block DOM failed: " + err.Error()
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
+		}
+	}
+
+	transactions := []*model.Transaction{
+		{
+			DoOperations: []*model.Operation{
+				{
+					Action:   "prependInsert",
+					Data:     data,
+					ParentID: parentID,
+				},
+			},
+		},
+	}
+
+	if err := model.PerformBlockTransactions(transactions); err != nil {
+		return apicontract.Failure[[]*apicontract.BlockTransaction](-1, err.Error())
+	}
+
+	broadcastTransactions(transactions)
+	return blockTransactionsResponse(transactions)
+})
+
+var batchPrependBlock = contractHandler(apicontract.BatchPrependBlock, func(c *gin.Context, request apicontract.BatchParentBlockRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
+	ret := gulu.Ret.NewResult()
+
+	blocksArg := request.Blocks
+	var transactions []*model.Transaction
+	luteEngine := util.NewLute()
+	for _, blockArg := range blocksArg {
+		data := blockArg.Data
+		dataType := blockArg.DataType
+		parentID := blockArg.ParentID
+		if util.InvalidIDPattern(parentID, ret) {
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
+		}
+		// prepend 只用 parentID 定位目标，目标必须是容器块，否则非法嵌套
+		if err := treenode.CheckContainerParent(parentID); err != nil {
+			ret.Code = -1
+			ret.Msg = err.Error()
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
+		}
+		if "markdown" == dataType {
+			var err error
+			data, err = dataBlockDOM(data, luteEngine)
+			if err != nil {
+				ret.Code = -1
+				ret.Msg = "data block DOM failed: " + err.Error()
+				return contractFailure[[]*apicontract.BlockTransaction](ret)
 			}
 		}
-		if nil != blockMap["nextID"] {
-			nextID = blockMap["nextID"].(string)
-			if "" != nextID && util.InvalidIDPattern(nextID, ret) {
-				return
+
+		transactions = append(transactions, &model.Transaction{
+			DoOperations: []*model.Operation{
+				{
+					Action:   "prependInsert",
+					Data:     data,
+					ParentID: parentID,
+				},
+			},
+		})
+	}
+
+	if err := model.PerformBlockTransactions(transactions); err != nil {
+		return apicontract.Failure[[]*apicontract.BlockTransaction](-1, err.Error())
+	}
+
+	broadcastTransactions(transactions)
+	return blockTransactionsResponse(transactions)
+})
+
+var insertBlock = contractHandler(apicontract.InsertBlock, func(c *gin.Context, request apicontract.InsertBlockRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
+	ret := gulu.Ret.NewResult()
+
+	data, dataType, parentID, previousID, nextID := request.Data, request.DataType, request.ParentID, request.PreviousID, request.NextID
+	if dataType != "markdown" && dataType != "dom" {
+		ret.Code = -1
+		ret.Msg = "dataType must be markdown or dom"
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
+	}
+	if parentID == "" && previousID == "" && nextID == "" {
+		ret.Code = -1
+		ret.Msg = "at least one of parentID, previousID or nextID is required"
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
+	}
+	for _, id := range []string{parentID, previousID, nextID} {
+		if id != "" && util.InvalidIDPattern(id, ret) {
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
+		}
+	}
+	if "markdown" == dataType {
+		luteEngine := util.NewLute()
+		var err error
+		data, err = dataBlockDOM(data, luteEngine)
+		if err != nil {
+			ret.Code = -1
+			ret.Msg = "data block DOM failed: " + err.Error()
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
+		}
+	}
+
+	transactions, err := model.PerformBlockOperation(&model.Operation{
+		Action:     "insert",
+		Data:       data,
+		ParentID:   parentID,
+		PreviousID: previousID,
+		NextID:     nextID,
+	})
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
+	}
+
+	broadcastTransactions(transactions)
+	return blockTransactionsResponse(transactions)
+})
+
+var updateBlock = contractHandler(apicontract.UpdateBlock, func(c *gin.Context, request apicontract.UpdateBlockRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
+	ret := gulu.Ret.NewResult()
+
+	input := blockUpdateInput(request)
+	if util.InvalidIDPattern(input.ID, ret) {
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
+	}
+	transactions, _, err := model.PerformBlockUpdates([]model.BlockUpdateInput{input})
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
+	}
+
+	broadcastTransactions(transactions)
+	return blockTransactionsResponse(transactions)
+})
+
+var batchInsertBlock = contractHandler(apicontract.BatchInsertBlock, func(c *gin.Context, request apicontract.BatchInsertBlockRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
+	ret := gulu.Ret.NewResult()
+
+	blocksArg := request.Blocks
+	var transactions []*model.Transaction
+	luteEngine := util.NewLute()
+	for _, blockArg := range blocksArg {
+		data, dataType := blockArg.Data, blockArg.DataType
+		parentID, previousID, nextID := blockArg.ParentID, blockArg.PreviousID, blockArg.NextID
+		for _, id := range []string{parentID, previousID, nextID} {
+			if id != "" && util.InvalidIDPattern(id, ret) {
+				return contractFailure[[]*apicontract.BlockTransaction](ret)
+			}
+		}
+		// 仅靠 parentID 定位目标时（无 previousID/nextID），目标必须是容器块，否则非法嵌套
+		if "" != parentID && "" == previousID && "" == nextID {
+			if err := treenode.CheckContainerParent(parentID); err != nil {
+				ret.Code = -1
+				ret.Msg = err.Error()
+				return contractFailure[[]*apicontract.BlockTransaction](ret)
 			}
 		}
 
@@ -773,7 +766,7 @@ func batchInsertBlock(c *gin.Context) {
 			if err != nil {
 				ret.Code = -1
 				ret.Msg = "data block DOM failed: " + err.Error()
-				return
+				return contractFailure[[]*apicontract.BlockTransaction](ret)
 			}
 		}
 
@@ -790,158 +783,61 @@ func batchInsertBlock(c *gin.Context) {
 		})
 	}
 
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
+	if err := model.PerformBlockTransactions(transactions); err != nil {
+		return apicontract.Failure[[]*apicontract.BlockTransaction](-1, err.Error())
+	}
 
-	ret.Data = transactions
 	broadcastTransactions(transactions)
-}
+	return blockTransactionsResponse(transactions)
+})
 
-func batchUpdateBlock(c *gin.Context) {
+var batchUpdateBlock = contractHandler(apicontract.BatchUpdateBlock, func(c *gin.Context, request apicontract.BatchUpdateBlockRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	if len(request.Blocks) == 0 {
+		return apicontract.Failure[[]*apicontract.BlockTransaction](-1, "Field [blocks] must not be empty")
+	}
+	inputs := make([]model.BlockUpdateInput, 0, len(request.Blocks))
+	for i, block := range request.Blocks {
+		input := blockUpdateInput(block)
+		if util.InvalidIDPattern(input.ID, ret) {
+			ret.Msg = fmt.Sprintf("blocks[%d]: %s", i, ret.Msg)
+			return contractFailure[[]*apicontract.BlockTransaction](ret)
+		}
+		inputs = append(inputs, input)
+	}
+	transactions, _, err := model.PerformBlockUpdates(inputs)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
 	}
 
-	blocksArg := arg["blocks"].([]interface{})
-
-	type updateBlockArg struct {
-		ID       string
-		Data     string
-		DataType string
-		Block    *model.Block
-		Tree     *parse.Tree
-	}
-
-	var blocks []*updateBlockArg
-	luteEngine := util.NewLute()
-	for _, blockArg := range blocksArg {
-		blockMap := blockArg.(map[string]interface{})
-		id := blockMap["id"].(string)
-		if util.InvalidIDPattern(id, ret) {
-			return
-		}
-
-		data := blockMap["data"].(string)
-		dataType := blockMap["dataType"].(string)
-		if "markdown" == dataType {
-			var err error
-			data, err = dataBlockDOM(data, luteEngine)
-			if err != nil {
-				ret.Code = -1
-				ret.Msg = "data block DOM failed: " + err.Error()
-				return
-			}
-		}
-		tree := luteEngine.BlockDOM2Tree(data)
-		if nil == tree || nil == tree.Root || nil == tree.Root.FirstChild {
-			ret.Code = -1
-			ret.Msg = "parse tree failed"
-			return
-		}
-
-		block, err := model.GetBlock(id, nil)
-		if err != nil {
-			ret.Code = -1
-			ret.Msg = "get block failed: " + err.Error()
-			return
-		}
-
-		blocks = append(blocks, &updateBlockArg{
-			ID:       id,
-			Data:     data,
-			DataType: dataType,
-			Block:    block,
-			Tree:     tree,
-		})
-	}
-
-	var ops []*model.Operation
-	tx := &model.Transaction{}
-	transactions := []*model.Transaction{tx}
-	for _, upBlock := range blocks {
-		block := upBlock.Block
-		data := upBlock.Data
-		tree := upBlock.Tree
-		id := upBlock.ID
-		if "NodeDocument" == block.Type {
-			oldTree, err := filesys.LoadTree(block.Box, block.Path, luteEngine)
-			if err != nil {
-				ret.Code = -1
-				ret.Msg = "load tree failed: " + err.Error()
-				return
-			}
-			var toRemoves []*ast.Node
-
-			for n := oldTree.Root.FirstChild; nil != n; n = n.Next {
-				toRemoves = append(toRemoves, n)
-				ops = append(ops, &model.Operation{Action: "delete", ID: n.ID, Data: map[string]interface{}{
-					"createEmptyParagraph": false, // 清空文档后前端不要创建空段落
-				}})
-			}
-			for _, n := range toRemoves {
-				n.Unlink()
-			}
-			ops = append(ops, &model.Operation{Action: "appendInsert", Data: data, ParentID: id})
-		} else {
-			if "NodeListItem" == block.Type && ast.NodeList == tree.Root.FirstChild.Type {
-				// 使用 API `api/block/updateBlock` 更新列表项时渲染错误 https://github.com/siyuan-note/siyuan/issues/4658
-				tree.Root.AppendChild(tree.Root.FirstChild.FirstChild) // 将列表下的第一个列表项移到文档结尾，移动以后根下面直接挂列表项，渲染器可以正常工作
-				tree.Root.FirstChild.Unlink()                          // 删除列表
-				tree.Root.FirstChild.Unlink()                          // 继续删除列表 IAL
-			}
-			tree.Root.FirstChild.SetIALAttr("id", id)
-
-			data = luteEngine.Tree2BlockDOM(tree, luteEngine.RenderOptions, luteEngine.ParseOptions)
-			ops = append(ops, &model.Operation{
-				Action: "update",
-				ID:     id,
-				Data:   data,
-			})
-		}
-	}
-
-	tx.DoOperations = ops
-	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
-
-	ret.Data = transactions
 	broadcastTransactions(transactions)
-}
+	return blockTransactionsResponse(transactions)
+})
 
-func deleteBlock(c *gin.Context) {
+var deleteBlock = contractHandler(apicontract.DeleteBlock, func(c *gin.Context, request apicontract.DeleteBlockRequest) apicontract.Response[[]*apicontract.BlockTransaction] {
 	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	id := arg["id"].(string)
+	id := request.ID
 	if util.InvalidIDPattern(id, ret) {
-		return
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
 	}
 
-	transactions := []*model.Transaction{
-		{
-			DoOperations: []*model.Operation{
-				{
-					Action: "delete",
-					ID:     id,
-				},
-			},
-		},
+	transactions, err := model.PerformBlockOperation(&model.Operation{
+		Action: "delete",
+		ID:     id,
+	})
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return contractFailure[[]*apicontract.BlockTransaction](ret)
 	}
 
-	model.PerformTransactions(&transactions)
-
-	ret.Data = transactions
 	broadcastTransactions(transactions)
-}
+	return blockTransactionsResponse(transactions)
+})
 
 func broadcastTransactions(transactions []*model.Transaction) {
 	evt := util.NewCmdResult("transactions", 0, util.PushModeBroadcast)
@@ -950,34 +846,9 @@ func broadcastTransactions(transactions []*model.Transaction) {
 }
 
 func dataBlockDOM(data string, luteEngine *lute.Lute) (ret string, err error) {
-	luteEngine.SetHTMLTag2TextMark(true) // API `/api/block/**` 无法使用 `<u>foo</u>` 与 `<kbd>bar</kbd>` 插入/更新行内元素 https://github.com/siyuan-note/siyuan/issues/6039
+	return model.DataBlockDOM(data, luteEngine)
+}
 
-	ret, tree := luteEngine.Md2BlockDOMTree(data, true)
-	if "" == ret {
-		// 使用 API 插入空字符串出现错误 https://github.com/siyuan-note/siyuan/issues/3931
-		blankParagraph := treenode.NewParagraph("")
-		ret = luteEngine.RenderNodeBlockDOM(blankParagraph)
-	}
-
-	invalidID := ""
-	ast.Walk(tree.Root, func(n *ast.Node, entering bool) ast.WalkStatus {
-		if !entering {
-			return ast.WalkContinue
-		}
-
-		if "" != n.ID {
-			if !ast.IsNodeIDPattern(n.ID) {
-				invalidID = n.ID
-				return ast.WalkStop
-			}
-		}
-		return ast.WalkContinue
-	})
-
-	if "" != invalidID {
-		err = errors.New("found invalid ID [" + invalidID + "]")
-		ret = ""
-		return
-	}
-	return
+func blockUpdateInput(request apicontract.UpdateBlockRequest) model.BlockUpdateInput {
+	return model.BlockUpdateInput{ID: request.ID, Data: request.Data, DataType: request.DataType, LockType: request.LockType}
 }

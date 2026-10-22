@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -39,20 +39,28 @@ import (
 
 var ErrFailedToConnectCloudServer = errors.New("failed to connect cloud server")
 
+var (
+	shorthandAudioPattern = regexp.MustCompile("<audio.*>.*</audio>")
+	shorthandVideoPattern = regexp.MustCompile("<video.*>.*</video>")
+	shorthandFilePattern  = regexp.MustCompile(`\[文件\]\(.*\)`)
+)
+
 func CloudChatGPT(msg string, contextMsgs []string) (ret string, stop bool, err error) {
-	if nil == Conf.GetUser() {
+	user := Conf.GetUser()
+	if nil == user {
 		return
 	}
+	invalidUser := cloudAccountAuthFailureHandler(user.UserToken)
 
-	payload := map[string]interface{}{}
-	var messages []map[string]interface{}
+	payload := map[string]any{}
+	var messages []map[string]any
 	for _, contextMsg := range contextMsgs {
-		messages = append(messages, map[string]interface{}{
+		messages = append(messages, map[string]any{
 			"role":    "user",
 			"content": contextMsg,
 		})
 	}
-	messages = append(messages, map[string]interface{}{
+	messages = append(messages, map[string]any{
 		"role":    "user",
 		"content": msg,
 	})
@@ -60,9 +68,9 @@ func CloudChatGPT(msg string, contextMsgs []string) (ret string, stop bool, err 
 
 	requestResult := gulu.Ret.NewResult()
 	request := httpclient.NewCloudRequest30s()
-	_, err = request.
+	resp, err := request.
 		SetSuccessResult(requestResult).
-		SetCookies(&http.Cookie{Name: "symphony", Value: Conf.GetUser().UserToken}).
+		SetCookies(&http.Cookie{Name: "symphony", Value: user.UserToken}).
 		SetBody(payload).
 		Post(util.GetCloudServer() + "/apis/siyuan/ai/chatGPT")
 	if err != nil {
@@ -70,20 +78,27 @@ func CloudChatGPT(msg string, contextMsgs []string) (ret string, stop bool, err 
 		err = ErrFailedToConnectCloudServer
 		return
 	}
+	if http.StatusUnauthorized == resp.StatusCode {
+		invalidUser()
+		return "", true, errors.New(Conf.Language(31))
+	}
+	if http.StatusOK != resp.StatusCode {
+		return "", true, ErrFailedToConnectCloudServer
+	}
 	if 0 != requestResult.Code {
 		err = errors.New(requestResult.Msg)
 		stop = true
 		return
 	}
 
-	data := requestResult.Data.(map[string]interface{})
-	choices := data["choices"].([]interface{})
+	data := requestResult.Data.(map[string]any)
+	choices := data["choices"].([]any)
 	if 1 > len(choices) {
 		stop = true
 		return
 	}
-	choice := choices[0].(map[string]interface{})
-	message := choice["message"].(map[string]interface{})
+	choice := choices[0].(map[string]any)
+	message := choice["message"].(map[string]any)
 	ret = message["content"].(string)
 
 	if nil != choice["finish_reason"] {
@@ -100,23 +115,31 @@ func CloudChatGPT(msg string, contextMsgs []string) (ret string, stop bool, err 
 }
 
 func StartFreeTrial() (err error) {
-	if nil == Conf.GetUser() {
+	user := Conf.GetUser()
+	if user == nil {
 		return errors.New(Conf.Language(31))
 	}
-
+	invalidUser := cloudAccountAuthFailureHandler(user.UserToken)
 	requestResult := gulu.Ret.NewResult()
 	request := httpclient.NewCloudRequest30s()
 	resp, err := request.
 		SetSuccessResult(requestResult).
-		SetCookies(&http.Cookie{Name: "symphony", Value: Conf.GetUser().UserToken}).
+		SetCookies(&http.Cookie{Name: "symphony", Value: user.UserToken}).
 		Post(util.GetCloudServer() + "/apis/siyuan/user/startFreeTrial")
 	if err != nil {
 		logging.LogErrorf("start free trial failed: %s", err)
 		return ErrFailedToConnectCloudServer
 	}
+	if http.StatusUnauthorized == resp.StatusCode {
+		invalidUser()
+		return errors.New(Conf.Language(31))
+	}
 	if http.StatusOK != resp.StatusCode {
 		logging.LogErrorf("start free trial failed: %d", resp.StatusCode)
 		return ErrFailedToConnectCloudServer
+	}
+	if -2 == requestResult.Code { // 已经试用订阅过
+		return errors.New(Conf.Language(298))
 	}
 	if 0 != requestResult.Code {
 		return errors.New(requestResult.Msg)
@@ -125,19 +148,36 @@ func StartFreeTrial() (err error) {
 }
 
 func DeactivateUser() (err error) {
+	release := lockAssetSourceChange()
+	defer release()
+	if Conf.Sync.Load().Provider == conf.ProviderSiYuan {
+		if err = requireCompleteAssetDownloads(); err != nil {
+			return
+		}
+	}
+	user := Conf.GetUser()
+	if user == nil {
+		return errors.New(Conf.Language(31))
+	}
+	invalidUser := cloudAccountAuthFailureHandler(user.UserToken)
 	requestResult := gulu.Ret.NewResult()
 	request := httpclient.NewCloudRequest30s()
 	resp, err := request.
 		SetSuccessResult(requestResult).
-		SetCookies(&http.Cookie{Name: "symphony", Value: Conf.GetUser().UserToken}).
+		SetCookies(&http.Cookie{Name: "symphony", Value: user.UserToken}).
 		Post(util.GetCloudServer() + "/apis/siyuan/user/deactivate")
 	if err != nil {
 		logging.LogErrorf("deactivate user failed: %s", err)
 		return ErrFailedToConnectCloudServer
 	}
 
-	if 401 == resp.StatusCode {
+	if http.StatusUnauthorized == resp.StatusCode {
+		invalidUser()
 		err = errors.New(Conf.Language(31))
+		return
+	}
+	if http.StatusOK != resp.StatusCode {
+		err = ErrFailedToConnectCloudServer
 		return
 	}
 
@@ -149,21 +189,31 @@ func DeactivateUser() (err error) {
 }
 
 func SetCloudBlockReminder(id, data string, timed int64) (err error) {
+	user := Conf.GetUser()
+	if user == nil {
+		return errors.New(Conf.Language(31))
+	}
+	invalidUser := cloudAccountAuthFailureHandler(user.UserToken)
 	requestResult := gulu.Ret.NewResult()
-	payload := map[string]interface{}{"dataId": id, "data": data, "timed": timed}
+	payload := map[string]any{"dataId": id, "data": data, "timed": timed}
 	request := httpclient.NewCloudRequest30s()
 	resp, err := request.
 		SetSuccessResult(requestResult).
 		SetBody(payload).
-		SetCookies(&http.Cookie{Name: "symphony", Value: Conf.GetUser().UserToken}).
+		SetCookies(&http.Cookie{Name: "symphony", Value: user.UserToken}).
 		Post(util.GetCloudServer() + "/apis/siyuan/calendar/setBlockReminder")
 	if err != nil {
 		logging.LogErrorf("set block reminder failed: %s", err)
 		return ErrFailedToConnectCloudServer
 	}
 
-	if 401 == resp.StatusCode {
+	if http.StatusUnauthorized == resp.StatusCode {
+		invalidUser()
 		err = errors.New(Conf.Language(31))
+		return
+	}
+	if http.StatusOK != resp.StatusCode {
+		err = ErrFailedToConnectCloudServer
 		return
 	}
 
@@ -183,19 +233,29 @@ func LoadUploadToken() (err error) {
 		return
 	}
 
+	user := Conf.GetUser()
+	if user == nil {
+		return errors.New(Conf.Language(31))
+	}
+	invalidUser := cloudAccountAuthFailureHandler(user.UserToken)
 	requestResult := gulu.Ret.NewResult()
 	request := httpclient.NewCloudRequest30s()
 	resp, err := request.
 		SetSuccessResult(requestResult).
-		SetCookies(&http.Cookie{Name: "symphony", Value: Conf.GetUser().UserToken}).
+		SetCookies(&http.Cookie{Name: "symphony", Value: user.UserToken}).
 		Post(util.GetCloudServer() + "/apis/siyuan/upload/token")
 	if err != nil {
 		logging.LogErrorf("get upload token failed: %s", err)
 		return ErrFailedToConnectCloudServer
 	}
 
-	if 401 == resp.StatusCode {
+	if http.StatusUnauthorized == resp.StatusCode {
+		invalidUser()
 		err = errors.New(Conf.Language(31))
+		return
+	}
+	if http.StatusOK != resp.StatusCode {
+		err = ErrFailedToConnectCloudServer
 		return
 	}
 
@@ -204,7 +264,7 @@ func LoadUploadToken() (err error) {
 		return
 	}
 
-	resultData := requestResult.Data.(map[string]interface{})
+	resultData := requestResult.Data.(map[string]any)
 	uploadToken = resultData["uploadToken"].(string)
 	uploadTokenTime = now
 	return
@@ -261,10 +321,14 @@ func refreshSubscriptionExpirationRemind() {
 func refreshUser() {
 	defer logging.Recover()
 
-	if nil != Conf.GetUser() {
-		time.Sleep(2 * time.Minute)
-		if nil != Conf.GetUser() {
-			RefreshUser(Conf.GetUser().UserToken)
+	if user := Conf.GetUser(); nil != user {
+		_, err := RefreshUser(user.UserToken)
+		if nil != err {
+			msg := Conf.Language(18)
+			if IsInvalidUserRefresh(err) {
+				msg = Conf.Language(19)
+			}
+			util.PushErrMsg(msg, 5000)
 		}
 		subscriptionExpirationReminded = false
 	}
@@ -274,7 +338,7 @@ func refreshCheckDownloadInstallPkg() {
 	defer logging.Recover()
 
 	time.Sleep(3 * time.Minute)
-	checkDownloadInstallPkg()
+	checkDownloadInstallPkg(true)
 }
 
 func refreshAnnouncement() {
@@ -327,14 +391,34 @@ func refreshAnnouncement() {
 	}
 }
 
-func RefreshUser(token string) {
+// GetCloudUser 在启动时读取内存账户；需要刷新时保留资源来源切换保护。
+func GetCloudUser(token string, cached bool) (*conf.User, error) {
+	if cached {
+		return Conf.GetUser(), nil
+	}
+	return RefreshUser(token)
+}
+
+func RefreshUser(token string) (ret *conf.User, err error) {
+	release := lockAssetSourceChange()
+	defer release()
+	previousUserID := ""
+	if previousUser := Conf.GetUser(); nil != previousUser {
+		previousUserID = previousUser.UserId
+	}
 	threeDaysAfter := util.CurrentTimeMillis() + 1000*60*60*24*3
 	if "" == token {
 		user := Conf.GetUser()
 		if nil == user && "" != Conf.UserData {
 			user = loadUserFromConf()
 			if nil != user {
+				if err = validateCloudUserAssetSource(user); err != nil {
+					return nil, err
+				}
 				Conf.SetUser(user)
+				if previousUserID != user.UserId {
+					refreshLANSyncManager()
+				}
 			}
 		}
 		if nil == user {
@@ -345,55 +429,112 @@ func RefreshUser(token string) {
 		tokenExpireTime, err := strconv.ParseInt(user.UserTokenExpireTime+"000", 10, 64)
 		if err != nil {
 			logging.LogErrorf("convert token expire time [%s] failed: %s", user.UserTokenExpireTime, err)
-			util.PushErrMsg(Conf.Language(19), 5000)
-			return
+			return user, errRequestUserFailed
 		}
 
 		if threeDaysAfter > tokenExpireTime {
 			token = user.UserToken
 			goto Net
 		}
-		return
+		return user, nil
 	}
 
 Net:
 	start := time.Now()
+	previousUser := Conf.GetUser()
 	user, err := getUser(token)
+	if err == nil {
+		err = validateCloudUserAssetSource(user)
+	}
+	cloudAccountMu.Lock()
+	defer cloudAccountMu.Unlock()
+	if Conf.GetUser() != previousUser {
+		return Conf.GetUser(), errRequestUserFailed
+	}
+	user, invalidUserName, invalid := resolveCloudUserRefresh(Conf.GetUser(), user, err)
 	if err != nil {
-		if nil == Conf.GetUser() || errors.Is(err, errInvalidUser) {
-			util.PushErrMsg(Conf.Language(19), 5000)
-			return
+		if invalid {
+			if current := Conf.GetUser(); current != nil && current.UserToken != token {
+				return current, errRequestUserFailed
+			}
+			logoutUserLocked()
+			util.BroadcastByType("main", "setCloudUser", 0, "", map[string]any{
+				"user":     nil,
+				"userName": invalidUserName,
+			})
+			return nil, err
 		}
-
-		if errors.Is(err, errRequestUserFailed) {
-			util.PushErrMsg(Conf.Language(18), 5000)
-			return
-		}
-
-		var tokenExpireTime int64
-		tokenExpireTime, err = strconv.ParseInt(Conf.GetUser().UserTokenExpireTime+"000", 10, 64)
-		if err != nil {
-			logging.LogErrorf("convert token expire time [%s] failed: %s", Conf.GetUser().UserTokenExpireTime, err)
-			util.PushErrMsg(Conf.Language(19), 5000)
-			return
-		}
-
-		if threeDaysAfter > tokenExpireTime {
-			util.PushErrMsg(Conf.Language(19), 5000)
-			return
-		}
-		return
+		return user, err
 	}
 
 	Conf.SetUser(user)
 	data, _ := gulu.JSON.MarshalJSON(user)
 	Conf.UserData = util.AESEncrypt(string(data))
 	Conf.Save()
+	if previousUserID != user.UserId {
+		refreshLANSyncManager()
+	}
+	util.BroadcastByType("main", "setCloudUser", 0, "", map[string]any{
+		"user":     user,
+		"userName": "",
+	})
 
-	if elapsed := time.Now().Sub(start).Milliseconds(); 3000 < elapsed {
+	if elapsed := time.Since(start).Milliseconds(); 3000 < elapsed {
 		logging.LogInfof("get cloud user elapsed [%dms]", elapsed)
 	}
-	return
+	return user, nil
+}
+
+type cloudAssetSourceError struct {
+	cause error
+}
+
+func (err *cloudAssetSourceError) Error() string {
+	return err.cause.Error()
+}
+
+func (err *cloudAssetSourceError) Unwrap() error {
+	return err.cause
+}
+
+func IsCloudAssetSourceChange(err error) bool {
+	var sourceErr *cloudAssetSourceError
+	return errors.As(err, &sourceErr)
+}
+
+// 使用服务端返回的账号标识验证来源，允许过期登出后重新认证原账号。
+func validateCloudUserAssetSource(user *conf.User) error {
+	confSyncSnapshot := Conf.LoadSync()
+
+	if confSyncSnapshot.Provider != conf.ProviderSiYuan {
+		return nil
+	}
+	cloudConf, err := buildCloudConf()
+	if err != nil {
+		return &cloudAssetSourceError{cause: err}
+	}
+	cloudConf.UserID = user.UserId
+	if err = validateAssetDownloadSourceScope(assetDownloadScope(confSyncSnapshot.Provider, cloudConf, Conf.Repo.Load().Key)); err != nil {
+		return &cloudAssetSourceError{cause: err}
+	}
+	return nil
+}
+
+func IsInvalidUserRefresh(err error) bool {
+	return errors.Is(err, errInvalidUser)
+}
+
+func resolveCloudUserRefresh(previous, refreshed *conf.User, refreshErr error) (user *conf.User, invalidUserName string, invalid bool) {
+	if nil == refreshErr {
+		return refreshed, "", false
+	}
+	if errors.Is(refreshErr, errInvalidUser) {
+		if nil != previous {
+			invalidUserName = previous.UserName
+		}
+		return nil, invalidUserName, true
+	}
+	return previous, "", false
 }
 
 func loadUserFromConf() *conf.User {
@@ -411,14 +552,19 @@ func loadUserFromConf() *conf.User {
 }
 
 func RemoveCloudShorthands(ids []string) (err error) {
-	result := map[string]interface{}{}
+	user := Conf.GetUser()
+	if user == nil {
+		return errors.New(Conf.Language(31))
+	}
+	invalidUser := cloudAccountAuthFailureHandler(user.UserToken)
+	result := map[string]any{}
 	request := httpclient.NewCloudRequest30s()
-	body := map[string]interface{}{
+	body := map[string]any{
 		"ids": ids,
 	}
 	resp, err := request.
 		SetSuccessResult(&result).
-		SetCookies(&http.Cookie{Name: "symphony", Value: Conf.GetUser().UserToken}).
+		SetCookies(&http.Cookie{Name: "symphony", Value: user.UserToken}).
 		SetBody(body).
 		Post(util.GetCloudServer() + "/apis/siyuan/inbox/removeCloudShorthands")
 	if err != nil {
@@ -427,8 +573,13 @@ func RemoveCloudShorthands(ids []string) (err error) {
 		return
 	}
 
-	if 401 == resp.StatusCode {
+	if http.StatusUnauthorized == resp.StatusCode {
+		invalidUser()
 		err = errors.New(Conf.Language(31))
+		return
+	}
+	if http.StatusOK != resp.StatusCode {
+		err = ErrFailedToConnectCloudServer
 		return
 	}
 
@@ -441,12 +592,17 @@ func RemoveCloudShorthands(ids []string) (err error) {
 	return
 }
 
-func GetCloudShorthand(id string) (ret map[string]interface{}, err error) {
-	result := map[string]interface{}{}
+func GetCloudShorthand(id string) (ret map[string]any, err error) {
+	user := Conf.GetUser()
+	if user == nil {
+		return nil, errors.New(Conf.Language(31))
+	}
+	invalidUser := cloudAccountAuthFailureHandler(user.UserToken)
+	result := map[string]any{}
 	request := httpclient.NewCloudRequest30s()
 	resp, err := request.
 		SetSuccessResult(&result).
-		SetCookies(&http.Cookie{Name: "symphony", Value: Conf.GetUser().UserToken}).
+		SetCookies(&http.Cookie{Name: "symphony", Value: user.UserToken}).
 		Post(util.GetCloudServer() + "/apis/siyuan/inbox/getCloudShorthand?id=" + id)
 	if err != nil {
 		logging.LogErrorf("get cloud shorthand failed: %s", err)
@@ -454,8 +610,13 @@ func GetCloudShorthand(id string) (ret map[string]interface{}, err error) {
 		return
 	}
 
-	if 401 == resp.StatusCode {
+	if http.StatusUnauthorized == resp.StatusCode {
+		invalidUser()
 		err = errors.New(Conf.Language(31))
+		return
+	}
+	if http.StatusOK != resp.StatusCode {
+		err = ErrFailedToConnectCloudServer
 		return
 	}
 
@@ -465,7 +626,7 @@ func GetCloudShorthand(id string) (ret map[string]interface{}, err error) {
 		err = errors.New(result["msg"].(string))
 		return
 	}
-	ret = result["data"].(map[string]interface{})
+	ret = result["data"].(map[string]any)
 	t, _ := strconv.ParseInt(id, 10, 64)
 	hCreated := util.Millisecond2Time(t)
 	ret["hCreated"] = hCreated.Format("2006-01-02 15:04")
@@ -482,12 +643,17 @@ func GetCloudShorthand(id string) (ret map[string]interface{}, err error) {
 	return
 }
 
-func GetCloudShorthands(page int) (result map[string]interface{}, err error) {
-	result = map[string]interface{}{}
+func GetCloudShorthands(page int) (result map[string]any, err error) {
+	user := Conf.GetUser()
+	if user == nil {
+		return nil, errors.New(Conf.Language(31))
+	}
+	invalidUser := cloudAccountAuthFailureHandler(user.UserToken)
+	result = map[string]any{}
 	request := httpclient.NewCloudRequest30s()
 	resp, err := request.
 		SetSuccessResult(&result).
-		SetCookies(&http.Cookie{Name: "symphony", Value: Conf.GetUser().UserToken}).
+		SetCookies(&http.Cookie{Name: "symphony", Value: user.UserToken}).
 		Post(util.GetCloudServer() + "/apis/siyuan/inbox/getCloudShorthands?p=" + strconv.Itoa(page))
 	if err != nil {
 		logging.LogErrorf("get cloud shorthands failed: %s", err)
@@ -495,8 +661,13 @@ func GetCloudShorthands(page int) (result map[string]interface{}, err error) {
 		return
 	}
 
-	if 401 == resp.StatusCode {
+	if http.StatusUnauthorized == resp.StatusCode {
+		invalidUser()
 		err = errors.New(Conf.Language(31))
+		return
+	}
+	if http.StatusOK != resp.StatusCode {
+		err = ErrFailedToConnectCloudServer
 		return
 	}
 
@@ -508,21 +679,18 @@ func GetCloudShorthands(page int) (result map[string]interface{}, err error) {
 	}
 
 	luteEngine := NewLute()
-	audioRegexp := regexp.MustCompile("<audio.*>.*</audio>")
-	videoRegexp := regexp.MustCompile("<video.*>.*</video>")
-	fileRegexp := regexp.MustCompile("\\[文件]\\(.*\\)")
-	shorthands := result["data"].(map[string]interface{})["shorthands"].([]interface{})
+	shorthands := result["data"].(map[string]any)["shorthands"].([]any)
 	for _, item := range shorthands {
-		shorthand := item.(map[string]interface{})
+		shorthand := item.(map[string]any)
 		id := shorthand["oId"].(string)
 		t, _ := strconv.ParseInt(id, 10, 64)
 		hCreated := util.Millisecond2Time(t)
 		shorthand["hCreated"] = hCreated.Format("2006-01-02 15:04")
 
 		desc := shorthand["shorthandDesc"].(string)
-		desc = audioRegexp.ReplaceAllString(desc, " 语音 ")
-		desc = videoRegexp.ReplaceAllString(desc, " 视频 ")
-		desc = fileRegexp.ReplaceAllString(desc, " 文件 ")
+		desc = shorthandAudioPattern.ReplaceAllString(desc, " 语音 ")
+		desc = shorthandVideoPattern.ReplaceAllString(desc, " 视频 ")
+		desc = shorthandFilePattern.ReplaceAllString(desc, " 文件 ")
 		desc = strings.ReplaceAll(desc, "\n\n", "")
 		desc = strings.TrimSpace(desc)
 		shorthand["shorthandDesc"] = desc
@@ -543,8 +711,8 @@ var (
 )
 
 func getUser(token string) (*conf.User, error) {
-	result := map[string]interface{}{}
-	request := httpclient.NewCloudRequest30s()
+	result := map[string]any{}
+	request := httpclient.NewCloudRequest30s().SetRetryCount(0)
 	resp, err := request.
 		SetSuccessResult(&result).
 		SetBody(map[string]string{"token": token}).
@@ -555,6 +723,9 @@ func getUser(token string) (*conf.User, error) {
 	}
 	if http.StatusOK != resp.StatusCode {
 		logging.LogErrorf("get community user failed: %d", resp.StatusCode)
+		if http.StatusUnauthorized == resp.StatusCode {
+			return nil, errInvalidUser
+		}
 		return nil, errRequestUserFailed
 	}
 
@@ -578,18 +749,30 @@ func getUser(token string) (*conf.User, error) {
 }
 
 func UseActivationcode(code string) (err error) {
-	code = strings.TrimSpace(code)
 	code = util.RemoveInvalid(code)
+	code = strings.TrimSpace(code)
+	if "" == code {
+		return errors.New(Conf.Language(294))
+	}
+	user := Conf.GetUser()
+	if user == nil {
+		return errors.New(Conf.Language(31))
+	}
+	invalidUser := cloudAccountAuthFailureHandler(user.UserToken)
 	requestResult := gulu.Ret.NewResult()
 	request := httpclient.NewCloudRequest30s()
 	resp, err := request.
 		SetSuccessResult(requestResult).
 		SetBody(map[string]string{"data": code}).
-		SetCookies(&http.Cookie{Name: "symphony", Value: Conf.GetUser().UserToken}).
+		SetCookies(&http.Cookie{Name: "symphony", Value: user.UserToken}).
 		Post(util.GetCloudServer() + "/apis/siyuan/useActivationcode")
 	if err != nil {
 		logging.LogErrorf("check activation code failed: %s", err)
 		return ErrFailedToConnectCloudServer
+	}
+	if http.StatusUnauthorized == resp.StatusCode {
+		invalidUser()
+		return errors.New(Conf.Language(31))
 	}
 	if http.StatusOK != resp.StatusCode {
 		logging.LogErrorf("check activation code failed: %d", resp.StatusCode)
@@ -602,15 +785,25 @@ func UseActivationcode(code string) (err error) {
 }
 
 func CheckActivationcode(code string) (retCode int, msg string) {
-	code = strings.TrimSpace(code)
 	code = util.RemoveInvalid(code)
+	code = strings.TrimSpace(code)
+	if "" == code {
+		retCode = 1
+		msg = Conf.Language(294)
+		return
+	}
 	retCode = 1
+	user := Conf.GetUser()
+	if user == nil {
+		return retCode, Conf.Language(31)
+	}
+	invalidUser := cloudAccountAuthFailureHandler(user.UserToken)
 	requestResult := gulu.Ret.NewResult()
 	request := httpclient.NewCloudRequest30s()
 	resp, err := request.
 		SetSuccessResult(requestResult).
 		SetBody(map[string]string{"data": code}).
-		SetCookies(&http.Cookie{Name: "symphony", Value: Conf.GetUser().UserToken}).
+		SetCookies(&http.Cookie{Name: "symphony", Value: user.UserToken}).
 		Post(util.GetCloudServer() + "/apis/siyuan/checkActivationcode")
 	if err != nil {
 		logging.LogErrorf("check activation code failed: %s", err)
@@ -618,6 +811,10 @@ func CheckActivationcode(code string) (retCode int, msg string) {
 		return
 	}
 	if http.StatusOK != resp.StatusCode {
+		if http.StatusUnauthorized == resp.StatusCode {
+			invalidUser()
+			return retCode, Conf.Language(31)
+		}
 		logging.LogErrorf("check activation code failed: %d", resp.StatusCode)
 		msg = ErrFailedToConnectCloudServer.Error()
 		return
@@ -630,12 +827,29 @@ func CheckActivationcode(code string) (retCode int, msg string) {
 }
 
 func Login(userName, password, captcha string, cloudRegion int) (ret *gulu.Result) {
+	release := lockAssetSourceChange()
+	defer release()
+	previousCloudRegion := util.CurrentCloudRegion
+	if Conf.Sync.Load().Provider == conf.ProviderSiYuan && previousCloudRegion != cloudRegion {
+		if err := requireCompleteAssetDownloads(); err != nil {
+			ret = gulu.Ret.NewResult()
+			ret.Code = -1
+			ret.Msg = err.Error()
+			return
+		}
+	}
+	cloudAccountMu.Lock()
 	Conf.CloudRegion = cloudRegion
 	Conf.Save()
 	util.CurrentCloudRegion = cloudRegion
+	if previousCloudRegion != cloudRegion {
+		refreshLANSyncManager()
+	}
+	cloudAccountMu.Unlock()
 
-	result := map[string]interface{}{}
-	request := httpclient.NewCloudRequest30s()
+	result := map[string]any{}
+	// 登录请求不是幂等操作，关闭自动重试以避免重复登录。
+	request := httpclient.NewCloudRequest30s().SetRetryCount(0)
 	resp, err := request.
 		SetSuccessResult(&result).
 		SetBody(map[string]string{"userName": userName, "userPassword": password, "captcha": captcha}).
@@ -658,10 +872,10 @@ func Login(userName, password, captcha string, cloudRegion int) (ret *gulu.Resul
 	ret = &gulu.Result{
 		Code: int(result["code"].(float64)),
 		Msg:  result["msg"].(string),
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"userName":    result["userName"],
 			"token":       result["token"],
-			"needCaptcha": result["needCaptcha"],
+			"needCaptcha": result["needCaptcha"], // 值为 user id
 		},
 	}
 	if -1 == ret.Code {
@@ -670,23 +884,78 @@ func Login(userName, password, captcha string, cloudRegion int) (ret *gulu.Resul
 	return
 }
 
-func Login2fa(token, code string) (map[string]interface{}, error) {
-	result := map[string]interface{}{}
-	request := httpclient.NewCloudRequest30s()
-	_, err := request.
+func Login2fa(token, code string) (ret *gulu.Result) {
+	result := map[string]any{}
+	// 两步验证登录不是幂等操作，关闭自动重试以避免重复登录。
+	request := httpclient.NewCloudRequest30s().SetRetryCount(0)
+	resp, err := request.
 		SetSuccessResult(&result).
 		SetBody(map[string]string{"twofactorAuthCode": code}).
 		SetHeader("token", token).
 		Post(util.GetCloudServer() + "/apis/siyuan/login/2fa")
 	if err != nil {
 		logging.LogErrorf("login 2fa failed: %s", err)
-		return nil, errors.New(Conf.Language(18))
+		return failedLogin2faResult()
 	}
-	return result, nil
+	if http.StatusOK != resp.StatusCode {
+		logging.LogErrorf("login 2fa failed: %d", resp.StatusCode)
+		return failedLogin2faResult()
+	}
+
+	ret, ok := parseLogin2faResult(result)
+	if !ok {
+		logging.LogErrorf("login 2fa failed: invalid cloud response")
+		return failedLogin2faResult()
+	}
+	return
+}
+
+func failedLogin2faResult() *gulu.Result {
+	ret := gulu.Ret.NewResult()
+	ret.Code = -1
+	ret.Msg = Conf.Language(18)
+	return ret
+}
+
+func parseLogin2faResult(result map[string]any) (ret *gulu.Result, ok bool) {
+	code, codeOK := result["code"].(float64)
+	msg, msgOK := result["msg"].(string)
+	if !codeOK || !msgOK {
+		return nil, false
+	}
+	if 0 == code {
+		token, tokenOK := result["token"].(string)
+		if !tokenOK || "" == token {
+			return nil, false
+		}
+	}
+
+	ret = &gulu.Result{Code: int(code), Msg: msg, Data: result}
+	if -1 == ret.Code {
+		ret.Code = 1
+	}
+	return ret, true
 }
 
 func LogoutUser() {
+	release := lockAssetSourceChange()
+	defer release()
+	logoutUser()
+}
+
+// 登出只清除登录凭据，资源来源仍由已认证的下载状态保存。
+func logoutUser() {
+	cloudAccountMu.Lock()
+	defer cloudAccountMu.Unlock()
+	logoutUserLocked()
+}
+
+func logoutUserLocked() {
+	hadUser := nil != Conf.GetUser()
 	Conf.UserData = ""
 	Conf.SetUser(nil)
 	Conf.Save()
+	if hadUser {
+		refreshLANSyncManager()
+	}
 }

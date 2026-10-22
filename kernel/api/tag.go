@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,76 +17,52 @@
 package api
 
 import (
-	"net/http"
-
-	"github.com/88250/gulu"
 	"github.com/gin-gonic/gin"
+	"github.com/siyuan-note/siyuan/kernel/apicontract"
+	"github.com/siyuan-note/siyuan/kernel/conf"
 	"github.com/siyuan-note/siyuan/kernel/model"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
 
-func getTag(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+func tagContracts(tags model.Tags) []*apicontract.TagData {
+	if tags == nil {
+		return nil
 	}
-
-	sortParam := arg["sort"]
-	sortMode := model.Conf.Tag.Sort
-	if nil != sortParam {
-		sortMode = int(sortParam.(float64))
+	ret := make([]*apicontract.TagData, len(tags))
+	for i, tag := range tags {
+		if tag != nil {
+			// 模型层的 Name/Label 为 HTML 转义形态，前端负责按上下文转义，这里还原为纯文本
+			ret[i] = &apicontract.TagData{Name: util.UnescapeHTML(tag.Name), Label: tag.Label, Children: tagContracts(tag.Children),
+				Type: tag.Type, Depth: tag.Depth, Count: tag.Count}
+		}
 	}
-
-	model.Conf.Tag.Sort = sortMode
-	model.Conf.Save()
-
-	// API `getTag` add an optional parameter `ignoreMaxListHint` https://github.com/siyuan-note/siyuan/issues/16000
-	ignoreMaxListHint := false
-	ignoreMaxListHintArg := arg["ignoreMaxListHint"]
-	if nil != ignoreMaxListHintArg {
-		ignoreMaxListHint = ignoreMaxListHintArg.(bool)
-	}
-
-	app := arg["app"].(string)
-	ret.Data = model.BuildTags(ignoreMaxListHint, app)
+	return ret
 }
 
-func renameTag(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+var getTag = contractHandler(apicontract.GetTag, func(c *gin.Context, request apicontract.GetTagRequest) apicontract.Response[[]*apicontract.TagData] {
+	if model.IsAdminRoleContext(c) && !model.IsReadOnlyRoleContext(c) {
+		model.UpdateTagConf(func(s *conf.Tag) { s.Sort = int(request.Sort) })
 	}
-
-	oldLabel := arg["oldLabel"].(string)
-	newLabel := arg["newLabel"].(string)
-	if err := model.RenameTag(oldLabel, newLabel); err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
+	tags := model.BuildTags(request.IgnoreMaxListHint, request.App, int(request.Sort))
+	if model.IsReadOnlyRoleContext(c) {
+		tags = model.FilterTagsByPublishAccess(c, model.GetPublishAccess(), tags)
 	}
-}
-
-func removeTag(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
+	if tags == nil {
+		return apicontract.Success[[]*apicontract.TagData](nil)
 	}
+	return apicontract.Success(tagContracts(*tags))
+})
 
-	label := arg["label"].(string)
-	if err := model.RemoveTag(label); err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]interface{}{"closeTimeout": 5000}
-		return
+var renameTag = contractHandler(apicontract.RenameTag, func(c *gin.Context, request apicontract.RenameTagRequest) apicontract.Response[apicontract.Null] {
+	if err := model.RenameTag(request.OldLabel, request.NewLabel); err != nil {
+		return apicontract.FailureWithTimeout[apicontract.Null](-1, err.Error(), 5000)
 	}
-}
+	return apicontract.Success(apicontract.Null{})
+})
+
+var removeTag = contractHandler(apicontract.RemoveTag, func(c *gin.Context, request apicontract.RemoveTagRequest) apicontract.Response[apicontract.Null] {
+	if err := model.RemoveTag(request.Label); err != nil {
+		return apicontract.FailureWithTimeout[apicontract.Null](-1, err.Error(), 5000)
+	}
+	return apicontract.Success(apicontract.Null{})
+})

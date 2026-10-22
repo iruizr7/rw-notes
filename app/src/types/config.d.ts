@@ -24,9 +24,17 @@ declare namespace Config {
         /**
          * Access authorization code
          */
-        accessAuthCode: TAccessAuthCode;
-        account: IAccount;
+        accessAuthCode: string;
+        oidc: IOIDC;
         ai: IAI;
+        /**
+         * 当前设备的 OCR 设置；阈值只影响后续 PaddleOCR 识别，空值使用模型检测参数和 0.5 的识别阈值。
+         * provider 为 ai 时，手动和自动识别均使用独立的 aiModelId；失效时不回退到其他模型或提供商。
+         * 首次从本地提供商切换到 AI 时关闭自动识别，之后可以显式开启。
+         * reasoningEffort 独立控制手动和自动 AI OCR，空字符串沿用模型默认。
+         * showText、showEmpty、showError 独立控制图片悬浮提示，不受自动识别开关影响，也不改变搜索结果。
+         */
+        ocr: import("./api").SettingOCR;
         api: IAPI;
         appearance: IAppearance;
         bazaar: IBazaar;
@@ -46,7 +54,7 @@ declare namespace Config {
          * User interface language
          * Same as {@link IAppearance.lang}
          */
-        lang: TLang;
+        lang: string;
         /**
          * List of supported languages
          */
@@ -58,11 +66,14 @@ declare namespace Config {
         /**
          * Log level
          */
-        logLevel: TLogLevel;
-        /**
-         * Whether to open the user guide after startup
-         */
-        openHelp: boolean;
+        logLevel: string;
+        onboarding: {
+            state: string;
+            newUser: boolean;
+            dismissed: boolean;
+            notebookID: string;
+            documentID: string;
+        };
         /**
          * Publish service
          * 发布服务
@@ -73,7 +84,17 @@ declare namespace Config {
          * 全局只读
          */
         readonly: boolean;
+        /**
+         * Encrypted notebook global settings
+         * 加密笔记本全局设置
+         */
+        notebookCrypto: INotebookCrypto;
         repo: IRepo;
+        /**
+         * Global secrets store, referenced via {{secrets.NAME}} placeholders.
+         * 全局密钥库，通过 {{secrets.NAME}} 占位符引用
+         */
+        secrets: ISecrets;
         search: ISearch;
         /**
          * Whether to display the changelog for this release version
@@ -89,6 +110,11 @@ declare namespace Config {
          * Community user data (Encrypted)
          */
         userData: string;
+        /**
+         * Global variables store, referenced via {{vars.NAME}} placeholders.
+         * 全局变量库，通过 {{vars.NAME}} 占位符引用
+         */
+        variables: IVariables;
     }
 
     /**
@@ -96,87 +122,208 @@ declare namespace Config {
      */
     export type TAccessAuthCode = "" | "*******";
 
-    /**
-     * Account configuration
-     */
-    export interface IAccount {
-        /**
-         * Display the title icon
-         */
-        displayTitle: boolean;
-        /**
-         * Display the VIP icon
-         */
-        displayVIP: boolean;
+    export interface IOIDCClaimRule {
+        claim: string;
+        operator: string;
+        values: string[];
+    }
+
+    export interface IOIDC {
+        enabled: boolean;
+        provider: string;
+        issuerURL: string;
+        clientID: string;
+        clientSecret: string;
+        scopes: string[];
+        redirectURL: string;
+        allowAll: boolean;
+        claimRules: IOIDCClaimRule[];
     }
 
     /**
      * Artificial Intelligence (AI) related configuration
      */
     export interface IAI {
-        openAI: IOpenAI;
+        web: IAIWeb;
+        providers: IProvider[];
+        editing: IEditing;
+        agent: IAgent;
+        imageGeneration: IImageGeneration;
+        mcp: IMCP;
+        embedding: IEmbedding;
+        rerank: IRerank;
+        decision: IDecision;
     }
 
-    /**
-     * Open AI related configuration
-     */
-    export interface IOpenAI {
-        /**
-         * API base URL
-         */
-        apiBaseURL: string;
-        /**
-         * API key
-         */
+    /** 网页服务独立于对话模型；省略配置时搜索使用 Exa、抓取使用直接请求。 */
+    export interface IAIWeb {
+        searchProvider: string;
+        fetchProvider: string;
+        /** DeepSeek Search 与 Fetch 共用的凭证，由内核加密保存。 */
         apiKey: string;
-        /**
-         * The maximum number of contexts passed when requesting the API
-         */
-        apiMaxContexts: number;
-        /**
-         * Maximum number of tokens (0 means no limit)
-         */
-        apiMaxTokens: number;
-        /**
-         * The model name called by the API
-         */
-        apiModel: TOpenAIAPIModel;
-        /**
-         * API Provider
-         * OpenAI, Azure
-         */
-        apiProvider: TOpenAAPIProvider;
-        /**
-         * API request proxy address
-         */
-        apiProxy: string;
-        /**
-         * Parameter `temperature` that controls the randomness of the generated text
-         */
-        apiTemperature: number;
-        /**
-         * API request timeout (unit: seconds)
-         */
-        apiTimeout: number;
-        /**
-         * API request additional user agent field
-         */
-        apiUserAgent: string;
-        /**
-         * API version number
-         */
-        apiVersion: string;
+        /** DeepSeek 请求超时秒数，默认 30，范围 1–600。 */
+        timeout: number;
     }
 
     /**
-     * The model name called by the API
+     * AI agent global settings
      */
-    export type TOpenAIAPIModel = "gpt-4" | "gpt-4-32k" | "gpt-3.5-turbo" | "gpt-3.5-turbo-16k";
+    export interface IAgent {
+        /** 流式输出渲染 Markdown，默认关闭，重置普通设置时随 AI 配置保留 */
+        streamingMarkdown: boolean;
+        modelId: string;
+        sessionTimeout: number;
+        streamIdleTimeout: number;
+        /** 确认等待秒数；负数回退 600，0 保留无限等待语义 */
+        confirmTimeout: number;
+        maxRetries: number;
+        /** 有效范围为 0–2；越界值在配置规范化时回退 1 */
+        temperature: number;
+        /** 输出 token 上限；负数归零，0 表示使用模型默认值 */
+        maxCompletionTokens: number;
+        /** 工具调用轮数上限；负数归零，0 表示不限制轮数 */
+        maxToolCallRounds: number;
+        capabilityPolicy: ICapabilityPolicy;
+        skills: {
+            userEnabled: string[];
+            builtinDisabled: string[];
+        };
+        approvalPolicy: {
+            default: string;
+            overrides: Record<string, {
+                default: string;
+                actions: Record<string, string>;
+            }>;
+        };
+    }
+
+    export interface ICapabilityPolicy {
+        default: string;
+        overrides: Record<string, string>;
+    }
 
     /**
-     * API Provider
+     * AI in-editor chat scenario behavior settings (mirrors IAgent)
      */
-    export type TOpenAAPIProvider = "OpenAI" | "Azure";
+    export interface IEditing {
+        modelId: string;
+        maxHistoryMessages: number;
+        temperature: number;
+        maxCompletionTokens: number;
+    }
+
+    export interface IImageGeneration {
+        modelId: string;
+        requestTimeout: number;
+        size: string;
+        quality: string;
+        outputFormat: string;
+    }
+
+    /** 独立保存的决策服务凭证和参数。 */
+    export interface IDecisionProfile {
+        endpoint: string;
+        apiKey: string;
+        name: string;
+        timeout: number;
+    }
+
+    /** 当前决策服务及各供应商独立配置；平铺字段仅兼容 TypeSafe 客户端。 */
+    export interface IDecision extends IDecisionProfile {
+        enabled: boolean;
+        provider: string;
+        profiles: Record<string, IDecisionProfile>;
+    }
+
+    /**
+     * Embedding model configuration
+     */
+    export interface IEmbedding {
+        id: string;
+        enabled: boolean;
+        baseURL: string;
+        apiKey: string;
+        name: string;
+        timeout: number;
+        dimensions: number;
+        /** 嵌入索引并发请求数，默认 8，范围 1–64。 */
+        concurrency: number;
+        /** 每次嵌入索引请求的文本块数，默认 10，范围 1–128。 */
+        batchSize: number;
+    }
+
+    /**
+     * Rerank model configuration (semantic search result re-ranking)
+     */
+    export interface IRerank {
+        id: string;
+        enabled: boolean;
+        endpoint: string;
+        apiKey: string;
+        name: string;
+        requestFormat: string;
+        timeout: number;
+        candidateCount: number;
+    }
+
+    /**
+     * AI provider configuration
+     */
+    export interface IProvider {
+        /** 账户认证只保存本机账户引用；省略时使用 API Key */
+        authType?: string;
+        /** 本机按工作空间路径和服务商 ID 保存的账号绑定，不随 conf.json 或设置导出保存 */
+        accountID?: string;
+        headers?: Record<string, string>;
+        id: string;
+        enabled: boolean;
+        displayName?: string;
+        baseURL: string;
+        /**
+         * 生成协议：openai、openai-responses、anthropic-messages 或 gemini-interactions；省略时使用 openai
+         * Gemini Interactions 使用原生 /v1beta 或 /v1 基础地址，始终关闭服务端会话存储并由本地管理历史
+         */
+        protocol?: string;
+        apiKey: string;
+        requestTimeout: number;
+        models: IModel[];
+    }
+
+    /**
+     * AI model configuration. Behavior params (maxTokens/temperature/maxContexts)
+     * live on IEditing; Model holds identity and provider metadata.
+     */
+    export interface IModel {
+        id: string;
+        enabled: boolean;
+        name: string;
+        displayName?: string;
+        contextLength?: number;
+    }
+
+    /**
+     * MCP (Model Context Protocol) configuration
+     */
+    export interface IMCP {
+        servers: IMCPServer[];
+        exposurePolicy: ICapabilityPolicy;
+    }
+
+    export interface IMCPServer {
+        id: string;
+        enabled: boolean;
+        name: string;
+        url: string;
+        type: string;
+        command: string;
+        args?: string[];
+        inheritEnv?: string[];
+        env?: Record<string, string>;
+        headers?: Record<string, string>;
+        timeout: number;
+        disableStandaloneSSE: boolean;
+        trustToolAnnotations: boolean;
+    }
 
     /**
      * SiYuan API related configuration
@@ -192,10 +339,27 @@ declare namespace Config {
      * SiYuan appearance related configuration
      */
     export interface IAppearance {
+        /** 用户偏好保存在 conf.json；升级不读取旧 local.json 键，外观重置时恢复默认值 */
+        compactMode: boolean;
+        /** 默认关闭；新建空工作空间默认开启 */
+        menuMouseScroll: boolean;
+        pdfTheme: {light: string; dark: string; annoColor: string};
+        outlineKeepCurrentExpand: boolean;
+        /** 三项默认开启，侧栏滑动与按钮至少保留一种 */
+        mobileBars: {autoHide: boolean; sidebarSwipe: boolean; sidebarButtons: boolean};
+        /** 背景渐变，未配置时根据工作空间名称自动配色 */
+        bodyGradient?: {
+            mode: string;
+            light: {color: string; opacity: number};
+            dark: {color: string; opacity: number};
+        };
+        /** 全局默认字体，按优先级从高到低排列；动态文字图标使用此列表和首选字重，字体由客户端解析，日期类图标保留内置字体 */
+        globalFontFamilies: IEditor["fontFamilies"];
         /**
          * Close button behavior
          * - `0`: Exit application
          * - `1`: Minimize to pallets
+         * 仅接受 0、1，越界值在配置规范化时回退 0
          */
         closeButtonBehavior: number;
         /**
@@ -207,9 +371,9 @@ declare namespace Config {
          */
         codeBlockThemeLight: string;
         /**
-         * List of installed dark themes
+         * Whether to hide toolbar
          */
-        darkThemes: string[];
+        hideToolbar: boolean;
         /**
          * Whether to hide status bar
          */
@@ -221,7 +385,7 @@ declare namespace Config {
         /**
          * List of installed icon names
          */
-        icons: string[];
+        icons: { label: string; name: string }[];
         /**
          * The version number of the icon currently in use
          */
@@ -229,11 +393,15 @@ declare namespace Config {
         /**
          * The language used by the current user
          */
-        lang: TLang;
+        lang: string;
         /**
          * List of installed light themes
          */
-        lightThemes: string[];
+        lightThemes: IAppearanceTheme[];
+        /**
+         * List of installed dark themes
+         */
+        darkThemes: IAppearanceTheme[];
         /**
          * The current theme mode
          * - `0`: Light theme
@@ -261,6 +429,28 @@ declare namespace Config {
          */
         themeVer: string;
         statusBar: IAppearanceStatusBar;
+        notifications: IAppearanceNotifications;
+        entryVisibility: IEntryVisibility;
+    }
+
+    export interface IAppearanceTheme {
+        label: string;
+        name: string;
+        frontends?: string[];
+    }
+
+    export interface IEntryVisibilityProfile {
+        id: string;
+        name: string;
+        defaults?: "simple" | "full";
+        entries: Record<string, boolean>;
+        orders: Record<string, string[]>;
+    }
+
+    export interface IEntryVisibility {
+        version: number;
+        active: string;
+        profiles: IEntryVisibilityProfile[];
     }
 
     export interface IAppearanceStatusBar {
@@ -268,6 +458,20 @@ declare namespace Config {
         msgTaskHistoryDatabaseIndexCommitDisabled: boolean;
         msgTaskAssetDatabaseIndexCommitDisabled: boolean;
         msgTaskHistoryGenerateFileDisabled: boolean;
+        msgDataSyncDisabled: boolean;
+    }
+
+    /**
+     * 外观通知开关配置。Appearance.Notifications 为 undefined 时表示旧配置尚未迁移，整体按默认启用处理。
+     */
+    export interface IAppearanceNotifications {
+        docTreeMaxList: boolean;
+        tagMaxList: boolean;
+        workspaceNotSSD: boolean;
+        browserCompatibility: boolean;
+        selectAllTip?: boolean;
+        selectAllIncompleteTip?: boolean;
+        formatPainterTip?: boolean;
     }
 
     /**
@@ -277,21 +481,28 @@ declare namespace Config {
      * Same as {@link IAppearance.lang}
      */
     export type TLang =
-        "en_US"
-        | "ar_SA"
-        | "de_DE"
-        | "es_ES"
-        | "fr_FR"
-        | "he_IL"
-        | "it_IT"
-        | "ja_JP"
-        | "ko_KR"
-        | "pl_PL"
-        | "pt_BR"
-        | "ru_RU"
-        | "tr_TR"
-        | "zh_CN"
-        | "zh_CHT";
+        "en"
+        | "ar"
+        | "de"
+        | "es"
+        | "fr"
+        | "he"
+        | "hi"
+        | "id"
+        | "it"
+        | "ja"
+        | "ko"
+        | "pl"
+        | "pt-BR"
+        | "ru"
+        | "sk"
+        | "sr"
+        | "tr"
+        | "uk"
+        | "th"
+        | "nl"
+        | "zh-CN"
+        | "zh-TW";
 
     /**
      * SiYuan bazaar related configuration
@@ -340,9 +551,31 @@ declare namespace Config {
          */
         inlineStrikethrough: boolean;
         /**
+         * Whether to enable the full-width inline strikethrough
+         */
+        inlineFullWidthStrikethrough: boolean;
+        /**
+         * Whether to enable the full-width task list shortcut
+         */
+        blockFullWidthTaskList: boolean;
+        /**
          * Whether to enable the inline mark
          */
         inlineMark: boolean;
+        /**
+         * Whether to enable the middle dot code block shortcut
+         */
+        codeBlockMiddleDot: boolean;
+    }
+
+    export type TAssetOpenAction = "follow-tab" | "current" | "right" | "bottom" | "background" |
+        "new-window" | "app" | "folder";
+
+    export interface IAssetOpen {
+        click: TAssetOpenAction;
+        ctrlClick: TAssetOpenAction;
+        altClick: TAssetOpenAction;
+        shiftClick: TAssetOpenAction;
     }
 
     /**
@@ -351,12 +584,17 @@ declare namespace Config {
     export interface IEditor {
 
         /**
+         * Asset opening behavior
+         */
+        assetOpen: {[K in keyof IAssetOpen]: string};
+
+        /**
          * Whether to allow to execute javascript in the SVG
          */
         allowSVGScript: boolean;
 
         /**
-         * Whether to allow to execute javascript in the HTML block
+         * 是否允许在 HTML 内容中执行 JavaScript
          */
         allowHTMLBLockScript: boolean;
 
@@ -374,13 +612,27 @@ declare namespace Config {
          */
         backmentionExpandCount: number;
         /**
+         * Backlink mention keyword exclusion list (separated by commas `,`)
+         */
+        backlinkMentionExclude: string;
+        /**
          * Whether the backlink contains children
          */
         backlinkContainChildren: boolean;
+        /** 反链面板是否隐藏传递型纯引用块 */
+        backlinkHideReference: boolean;
+        /**
+         * Whether to show backlinks at the bottom of the document
+         */
+        backlinkShowBottom: boolean;
         /**
          * Backlink sort mode
          */
         backlinkSort: number;
+        /** 仅接受 0、1、2，越界值在配置规范化时回退 0 */
+        backlinkGlobalSort: number;
+        /** 仅接受 0、1、2，越界值在配置规范化时回退 0 */
+        backlinkBlockSort: number;
         /**
          * Backmention sort mode
          */
@@ -389,6 +641,10 @@ declare namespace Config {
          * The maximum length of the dynamic anchor text for block references
          */
         blockRefDynamicAnchorTextMaxLen: number;
+        /**
+         * Whether to check block references and database bindings before deleting or cutting
+         */
+        checkBlockRef: boolean;
         /**
          * Whether the code block has enabled ligatures
          */
@@ -404,16 +660,55 @@ declare namespace Config {
         /**
          * The number of spaces generated by the Tab key in the code block, configured as 0 means no
          * conversion to spaces
+         * 仅接受 0、2、4、6、8，其他值回退 0；0 保留制表符
          */
         codeTabSpaces: number;
         /**
          * Whether to display the bookmark icon
          */
         displayBookmarkIcon: boolean;
+        /** 是否显示完整块标，默认 false */
+        blockGutterMode: boolean;
         /**
          * Whether to display the network image mark
          */
         displayNetImgMark: boolean;
+        /** 全局显示图片文件名，默认关闭，不写入文档属性 */
+        displayImgName: boolean;
+        /** 全局在图片标题下显示提示文本，默认关闭，不写入文档属性 */
+        displayImgAlt: boolean;
+        /**
+         * Whether to show database attributes at the top of the document
+         */
+        databaseAttrShow: boolean;
+        /**
+         * Behavior when clicking a database badge
+         * - `0`: Focus the block and expand the database panel
+         * - `1`: Open the block attribute panel
+         * 仅接受 0、1，越界值在配置规范化时回退 0
+         */
+        databaseAttrClickMode: number;
+        /**
+         * Default state of database attributes
+         * - `0`: Expanded
+         * - `1`: Collapsed
+         * 仅接受 0、1，越界值在配置规范化时回退 0
+         */
+        databaseAttrViewMode: number;
+        /**
+         * Whether to hide empty database attributes
+         */
+        databaseAttrHideEmpty: boolean;
+        /**
+         * Whether to use tabs for database attributes
+         */
+        databaseAttrUseTabs: boolean;
+        /**
+         * Whether to retain dynamically loaded content blocks
+         */
+        keepLoadedContent: boolean;
+        /** 是否显示翻屏按钮，默认关闭，不迁移旧的本地偏好 */
+        pageScrollButtons: boolean;
         /**
          * The number of blocks loaded each time they are dynamically loaded
          */
@@ -423,10 +718,19 @@ declare namespace Config {
          */
         embedBlockBreadcrumb: boolean;
         /**
+         * Whether to display automatic heading numbers
+         */
+        headingNumber: boolean;
+        /**
+         * The automatic heading numbering format preset
+         */
+        headingNumberFormat: string;
+        /**
          * Heading embed mode for embedded blocks
          * - `0`: Show title with blocks below (default)
          * - `1`: Show only title
          * - `2`: Show only blocks below title
+         * 仅接受 0、1、2，越界值在配置规范化时回退 0
          */
         headingEmbedMode: number;
         /**
@@ -438,20 +742,38 @@ declare namespace Config {
          * - `0`: Hover over the cursor
          * - `1`: Hover over the cursor while holding down Ctrl
          * - `2`: Do not trigger the floating window
+         * 仅接受 0、1、2，越界值在配置规范化时回退 0
          */
         floatWindowMode: number;
         /**
-         * The font used in the editor
+         * Hover delay of the floating window in milliseconds.
+         * Only takes effect when `floatWindowMode` is `0`.
          */
-        fontFamily: string;
+        floatWindowDelay: number;
+        /**
+         * 编辑器字体，按优先级从高到低排列
+         */
+        fontFamilies: Array<{
+            family: string;
+            weight: number;
+            displayName: string;
+        }>;
+        /**
+         * 编辑器等宽字体，按优先级从高到低排列
+         */
+        codeFontFamilies: Array<{
+            family: string;
+            weight: number;
+            displayName: string;
+        }>;
         /**
          * The font size used in the editor
          */
         fontSize: number;
         /**
-         * Whether to enable the use of the mouse wheel to adjust the font size of the editor
+         * 使用键盘纵向移动时光标周围至少保留的可见行数
          */
-        fontSizeScrollZoom: boolean;
+        cursorSurroundingLines: number;
         /**
          * Whether the editor uses maximum width
          */
@@ -486,9 +808,21 @@ declare namespace Config {
          */
         onlySearchForDoc: boolean;
         /**
+         * Whether typing `[[` auto-inserts `]]` and typing `]]` completes the block reference
+         */
+        autoCloseRefBrackets: boolean;
+        /**
          * PlantUML rendering service address
          */
         plantUMLServePath: string;
+        /**
+         * Whether to auto-convert pasted URLs to links
+         */
+        pasteURLAutoConvert: boolean;
+        /**
+         * Whether to embed dragged HTML files as IFrame blocks
+         */
+        dragHTMLFileToIframe: boolean;
         /**
          * Whether to enable read-only mode
          */
@@ -497,6 +831,8 @@ declare namespace Config {
          * Whether to enable RTL (left-to-right chirography) mode
          */
         rtl: boolean;
+        /** 默认关闭；自动判定段落和标题方向，各列表项独立调整标记和缩进，手动方向优先，表格列顺序不变 */
+        autoDirection: boolean;
         /**
          * Whether to enable spell checking
          */
@@ -505,6 +841,10 @@ declare namespace Config {
          * Support spell check languages
          */
         spellcheckLanguages: string[];
+        /**
+         * Whether to search tags when typing `#`
+         */
+        hashTagSearch: boolean;
         /**
          * Whether to enable virtual references
          */
@@ -532,6 +872,7 @@ declare namespace Config {
          * Embedded block export mode
          * - `0`: Original block content
          * - `1`: Quotation block
+         * 仅接受 0、1，越界值在配置规范化时回退 1
          */
         blockEmbedMode: number;
         /**
@@ -556,6 +897,7 @@ declare namespace Config {
          * File annotation reference export mode
          * - `0`: File name - page number - anchor text
          * - `1`: Anchor text only
+         * 仅接受 0、1，越界值在配置规范化时回退 0
          */
         fileAnnotationRefMode: number;
         /**
@@ -625,6 +967,8 @@ declare namespace Config {
      * Document tree related configuration
      */
     export interface IFileTree {
+        /** 默认 viewedAt，未知值回落默认值；文档树设置重置时恢复默认 */
+        recentDocsSort: string;
         /**
          * Whether to allow the creation of sub-documents deeper than 7 levels
          */
@@ -638,15 +982,39 @@ declare namespace Config {
          */
         alwaysSelectOpenedFile: boolean;
         /**
+         * 桌面端单击文档图标的行为：0 修改图标，1 展开或折叠子文档；没有子文档时打开文档
+         * 桌面端笔记本图标始终用于修改图标；旧的布尔配置不迁移
+         */
+        docIconClickMode: number;
+        /**
+         * 点击父文档标题的行为：0 打开文档，1 立即展开或折叠子文档，2 单击展开或折叠、双击打开父文档
+         * 取 2 时单击等待约 300 毫秒；没有子文档时直接打开；旧的布尔配置不迁移
+         */
+        parentDocTitleClickMode: number;
+        /**
+         * Whether to enable top-level notebook documents
+         */
+        boxDocEnabled: boolean;
+        /**
+         * Whether to use SVG icons as the default icons for notebooks and documents
+         */
+        useSVGDefaultIcon: boolean;
+        /**
          * Whether to close all tabs when starting
          */
         closeTabsOnStart: boolean;
+        tabStartupMode: number;
         /**
          * The storage path of the new document
          */
         docCreateSavePath: string;
         /**
+         * The content template path of the new document
+         */
+        docCreateTemplatePath: string;
+        /**
          * The maximum number of documents listed
+         * 有效范围为 1–10240；小于 1 回退 512，大于 10240 截断至 10240
          */
         maxListCount: number;
         /**
@@ -658,10 +1026,22 @@ declare namespace Config {
          */
         openFilesUseCurrentTab: boolean;
         /**
+         * Whether to close tabs by double-clicking
+         */
+        closeTabOnDoubleClick: boolean;
+        /**
          * The storage path of the new document created using block references
          */
         refCreateSavePath: string;
         refCreateSaveBox: string;
+        /**
+         * Shorthand save notebook
+         */
+        shorthandSaveBox: string;
+        /**
+         * Shorthand save path
+         */
+        shorthandSavePath: string;
         docCreateSaveBox: string;
         /**
          * Close the secondary confirmation when deleting a document
@@ -695,6 +1075,7 @@ declare namespace Config {
         useSingleLineSave: boolean;
         /**
          * The .sy and database .json files larger than this value will prompt a warning (unit: MB)
+         * 有效范围为 2–10240 MB；小于 2 回退 8，大于 10240 截断至 10240
          */
         largeFileWarningSize: number;
         /**
@@ -711,6 +1092,14 @@ declare namespace Config {
      * Flashcard related configuration
      */
     export interface IFlashCard {
+        /**
+         * Whether to enable blockquote card making
+         */
+        blockquote: boolean;
+        /**
+         * Whether to enable callout card making
+         */
+        callout: boolean;
         /**
          * Whether to enable deck card making
          */
@@ -748,6 +1137,7 @@ declare namespace Config {
          * - `0`: New and old mixed
          * - `1`: New card priority
          * - `2`: Old card priority
+         * 仅接受 0、1、2，越界值在配置规范化时回退 0
          */
         reviewMode: number;
         /**
@@ -892,78 +1282,90 @@ declare namespace Config {
      * SiYuan keymap related configuration
      */
     export interface IKeymap {
-        editor: IKeymapEditor;
-        general: IKeymapGeneral;
-        plugin: IKeymapPlugin;
+        editor?: IKeymapEditor;
+        general?: IKeymapGeneral;
+        plugin?: IKeymapPlugin;
     }
 
     /**
      * SiYuan editor shortcut keys
      */
     export interface IKeymapEditor {
-        general: IKeymapEditorGeneral;
-        heading: IKeymapEditorHeading;
-        insert: IKeymapEditorInsert;
-        list: IKeymapEditorList;
-        table: IKeymapEditorTable;
+        general?: IKeymapEditorGeneral;
+        heading?: IKeymapEditorHeading;
+        insert?: IKeymapEditorInsert;
+        list?: IKeymapEditorList;
+        table?: IKeymapEditorTable;
     }
 
     /**
      * SiYuan editor general shortcut keys
      */
     export interface IKeymapEditorGeneral extends IKeys {
-        ai: IKey;
-        alignCenter: IKey;
-        alignLeft: IKey;
-        alignRight: IKey;
-        attr: IKey;
-        backlinks: IKey;
-        collapse: IKey;
-        copyBlockEmbed: IKey;
-        copyBlockRef: IKey;
-        copyHPath: IKey;
-        copyID: IKey;
-        copyPlainText: IKey;
-        copyProtocol: IKey;
-        copyProtocolInMd: IKey;
-        copyText: IKey;
-        duplicate: IKey;
-        exitFocus: IKey;
-        expand: IKey;
-        expandDown: IKey;
-        expandUp: IKey;
-        fullscreen: IKey;
-        graphView: IKey;
-        hLayout: IKey;
-        insertAfter: IKey;
-        insertBefore: IKey;
-        insertBottom: IKey;
-        insertRight: IKey;
-        jumpToParentNext: IKey;
-        moveToDown: IKey;
-        moveToUp: IKey;
-        netAssets2LocalAssets: IKey;
-        netImg2LocalAsset: IKey;
-        newContentFile: IKey;
-        newNameFile: IKey;
-        newNameSettingFile: IKey;
-        openBy: IKey;
-        optimizeTypography: IKey;
-        outline: IKey;
-        preview: IKey;
-        quickMakeCard: IKey;
-        redo: IKey;
-        refPopover: IKey;
-        refresh: IKey;
-        refTab: IKey;
-        rename: IKey;
-        showInFolder: IKey;
-        spaceRepetition: IKey;
-        switchReadonly: IKey;
-        switchAdjust: IKey;
-        undo: IKey;
-        vLayout: IKey;
-        wysiwyg: IKey;
+        ai?: IKey;
+        alignCenter?: IKey;
+        alignLeft?: IKey;
+        alignRight?: IKey;
+        attr?: IKey;
+        backlinks?: IKey;
+        collapse?: IKey;
+        foldChildHeadings?: IKey;
+        foldSiblingHeadings?: IKey;
+        foldRecursive?: IKey;
+        copyBlockEmbed?: IKey;
+        copyBlockRef?: IKey;
+        copyHPath?: IKey;
+        copyID?: IKey;
+        copyPlainText?: IKey;
+        copyRichText?: IKey;
+        copyProtocol?: IKey;
+        copyProtocolInMd?: IKey;
+        copyText?: IKey;
+        duplicate?: IKey;
+        exitFocus?: IKey;
+        focusBreadcrumb?: IKey;
+        expand?: IKey;
+        expandDown?: IKey;
+        expandUp?: IKey;
+        fullscreen?: IKey;
+        graphView?: IKey;
+        hLayout?: IKey;
+        insertAfter?: IKey;
+        insertBefore?: IKey;
+        insertBottom?: IKey;
+        insertRight?: IKey;
+        insertSuperBlockLeft?: IKey;
+        insertSuperBlockRight?: IKey;
+        jumpToParentNext?: IKey;
+        moveToDown?: IKey;
+        moveToUp?: IKey;
+        netAssets2LocalAssets?: IKey;
+        netImg2LocalAsset?: IKey;
+        newContentFile?: IKey;
+        newNameFile?: IKey;
+        newNameSettingFile?: IKey;
+        openBy?: IKey;
+        optimizeTypography?: IKey;
+        outline?: IKey;
+        editMode?: IKey;
+        quickMakeCard?: IKey;
+        redo?: IKey;
+        refPopover?: IKey;
+        refresh?: IKey;
+        refTab?: IKey;
+        rename?: IKey;
+        scrollPageDownWithoutMovingCaret?: IKey;
+        scrollPageUpWithoutMovingCaret?: IKey;
+        selectToPageEnd?: IKey;
+        selectToPageStart?: IKey;
+        goToDocumentStart?: IKey;
+        goToDocumentEnd?: IKey;
+        showInFolder?: IKey;
+        spaceRepetition?: IKey;
+        switchReadonly?: IKey;
+        switchAdjust?: IKey;
+        undo?: IKey;
+        vLayout?: IKey;
     }
 
     /**
@@ -977,62 +1379,79 @@ declare namespace Config {
      * SiYuan shortcut key
      */
     export interface IKey {
+        /** 多快捷键配置，custom 保留第一项以兼容单快捷键调用方。 */
+        bindings?: {
+            version?: import("./api").JSONValue;
+            keys?: import("./api").JSONValue;
+            defaults?: import("./api").JSONValue;
+            priority?: Record<string, number>;
+        };
         /**
          * Custom shortcut key
          */
-        custom: string;
+        custom?: string;
         /**
          * Default shortcut key
          */
-        default: string;
+        default?: string;
     }
 
     /**
      * SiYuan editor heading shortcut keys
      */
     export interface IKeymapEditorHeading extends IKeys {
-        heading1: IKey;
-        heading2: IKey;
-        heading3: IKey;
-        heading4: IKey;
-        heading5: IKey;
-        heading6: IKey;
-        paragraph: IKey;
+        heading1?: IKey;
+        heading2?: IKey;
+        heading3?: IKey;
+        heading4?: IKey;
+        heading5?: IKey;
+        heading6?: IKey;
+        paragraph?: IKey;
     }
 
     /**
      * SiYuan editor insert shortcut keys
      */
     export interface IKeymapEditorInsert extends IKeys {
-        appearance: IKey;
-        bold: IKey;
-        check: IKey;
-        clearInline: IKey;
-        code: IKey;
+        appearance?: IKey;
+        bold?: IKey;
+        check?: IKey;
+        clearInline?: IKey;
+        code?: IKey;
         "inline-code": IKey;
         "inline-math": IKey;
-        italic: IKey;
-        kbd: IKey;
-        lastUsed: IKey;
-        link: IKey;
-        mark: IKey;
-        memo: IKey;
-        ref: IKey;
-        strike: IKey;
-        sub: IKey;
-        sup: IKey;
-        table: IKey;
-        tag: IKey;
-        underline: IKey;
+        italic?: IKey;
+        kbd?: IKey;
+        lastUsed?: IKey;
+        link?: IKey;
+        mark?: IKey;
+        memo?: IKey;
+        /** 插入思维导图或将当前列表转换为思维导图，默认未绑定。 */
+        mindmap?: IKey;
+        ref?: IKey;
+        strike?: IKey;
+        sub?: IKey;
+        sup?: IKey;
+        table?: IKey;
+        tag?: IKey;
+        underline?: IKey;
     }
 
     /**
      * SiYuan editor list shortcut keys
      */
     export interface IKeymapEditorList extends IKeys {
-        checkToggle: IKey;
-        indent: IKey;
-        outdent: IKey;
+        prependListItem?: IKey;
+        appendListItem?: IKey;
+        /** 在思维导图中添加同级节点，编辑时先保存当前内容。 */
+        mindmapAddSibling?: IKey;
+        /** 在思维导图中添加子节点，编辑时先保存当前内容。 */
+        mindmapAddChild?: IKey;
+        checkToggle?: IKey;
+        /** 切换任务完成状态，默认未绑定；待办和进行中变为完成，其他状态变为待办。 */
+        taskCompletionToggle?: IKey;
+        indent?: IKey;
+        outdent?: IKey;
     }
 
     /**
@@ -1041,79 +1460,95 @@ declare namespace Config {
     export interface IKeymapEditorTable extends IKeys {
         "delete-column": IKey;
         "delete-row": IKey;
-        insertColumnLeft: IKey;
-        insertColumnRight: IKey;
-        insertRowAbove: IKey;
-        insertRowBelow: IKey;
-        moveToDown: IKey;
-        moveToLeft: IKey;
-        moveToRight: IKey;
-        moveToUp: IKey;
+        insertColumnLeft?: IKey;
+        insertColumnRight?: IKey;
+        insertRowAbove?: IKey;
+        insertRowBelow?: IKey;
+        moveToDown?: IKey;
+        moveToLeft?: IKey;
+        moveToRight?: IKey;
+        moveToUp?: IKey;
     }
 
     /**
      * SiYuan general shortcut keys
      */
     export interface IKeymapGeneral extends IKeys {
-        mainMenu: IKey;
-        commandPanel: IKey;
-        editReadonly: IKey;
-        syncNow: IKey;
-        enterBack: IKey;
-        enter: IKey;
-        goForward: IKey;
-        goBack: IKey;
-        newFile: IKey;
-        search: IKey;
-        globalSearch: IKey;
-        stickSearch: IKey;
-        replace: IKey;
-        closeTab: IKey;
-        fileTree: IKey;
-        outline: IKey;
-        bookmark: IKey;
-        tag: IKey;
-        dailyNote: IKey;
-        inbox: IKey;
-        backlinks: IKey;
-        graphView: IKey;
-        globalGraph: IKey;
-        riffCard: IKey;
-        config: IKey;
-        dataHistory: IKey;
-        toggleWin: IKey;
-        lockScreen: IKey;
-        recentDocs: IKey;
-        goToTab1: IKey;
-        goToTab2: IKey;
-        goToTab3: IKey;
-        goToTab4: IKey;
-        goToTab5: IKey;
-        goToTab6: IKey;
-        goToTab7: IKey;
-        goToTab8: IKey;
-        goToTab9: IKey;
-        goToTabNext: IKey;
-        goToTabPrev: IKey;
-        goToEditTabNext: IKey;
-        goToEditTabPrev: IKey;
-        recentClosed: IKey;
-        move: IKey;
-        selectOpen1: IKey;
-        toggleDock: IKey;
-        splitLR: IKey;
-        splitMoveR: IKey;
-        splitTB: IKey;
-        splitMoveB: IKey;
-        closeOthers: IKey;
-        closeAll: IKey;
-        closeUnmodified: IKey;
-        closeLeft: IKey;
-        closeRight: IKey;
-        tabToWindow: IKey;
-        addToDatabase: IKey;
-        unsplit: IKey;
-        unsplitAll: IKey;
+        previousDatabaseRow?: IKey;
+        nextDatabaseRow?: IKey;
+        /** 打开当前焦点的上下文菜单，默认 ⌘/，支持多绑定和解绑。 */
+        openContextMenu?: IKey;
+        mainMenu?: IKey;
+        commandPanel?: IKey;
+        increaseEditorFontSize?: IKey;
+        decreaseEditorFontSize?: IKey;
+        resetEditorFontSize?: IKey;
+        editReadonly?: IKey;
+        syncNow?: IKey;
+        enterBack?: IKey;
+        enter?: IKey;
+        goForward?: IKey;
+        goBack?: IKey;
+        newFile?: IKey;
+        search?: IKey;
+        globalSearch?: IKey;
+        stickSearch?: IKey;
+        replace?: IKey;
+        closeTab?: IKey;
+        agentChat?: IKey;
+        agentSend?: IKey;
+        fileTree?: IKey;
+        outline?: IKey;
+        bookmark?: IKey;
+        tag?: IKey;
+        dailyNote?: IKey;
+        inbox?: IKey;
+        backlinks?: IKey;
+        graphView?: IKey;
+        globalGraph?: IKey;
+        riffCard?: IKey;
+        config?: IKey;
+        dataHistory?: IKey;
+        toggleWin?: IKey;
+        lockScreen?: IKey;
+        recentDocs?: IKey;
+        goToTab1?: IKey;
+        goToTab2?: IKey;
+        goToTab3?: IKey;
+        goToTab4?: IKey;
+        goToTab5?: IKey;
+        goToTab6?: IKey;
+        goToTab7?: IKey;
+        goToTab8?: IKey;
+        goToTab9?: IKey;
+        goToTabNext?: IKey;
+        goToTabPrev?: IKey;
+        switchTab?: IKey;
+        goToEditTabNext?: IKey;
+        goToEditTabPrev?: IKey;
+        recentClosed?: IKey;
+        move?: IKey;
+        selectOpen1?: IKey;
+        switchLeftDock?: IKey;
+        switchRightDock?: IKey;
+        switchBottomDock?: IKey;
+        toggleLeftDockPanel?: IKey;
+        toggleRightDockPanel?: IKey;
+        toggleBottomDockPanel?: IKey;
+        toggleDock?: IKey;
+        splitLR?: IKey;
+        splitMoveR?: IKey;
+        splitTB?: IKey;
+        splitMoveB?: IKey;
+        closeOthers?: IKey;
+        closeAll?: IKey;
+        closeUnmodified?: IKey;
+        closeLeft?: IKey;
+        closeRight?: IKey;
+        tabToWindow?: IKey;
+        addToDatabase?: IKey;
+        unsplit?: IKey;
+        unsplitAll?: IKey;
     }
 
     /**
@@ -1255,6 +1690,13 @@ declare namespace Config {
          * Whether to search callout
          */
         callout: boolean;
+        tabs?: boolean;
+        tabItem?: boolean;
+        /** 思维导图搜索；缺省时默认开启，更新设置时省略则保留当前值 */
+        mindmap?: boolean;
+        /** 思维导图项搜索；缺省时默认关闭，更新设置时省略则保留当前值 */
+        mindmapItem?: boolean;
+        customBlock?: boolean;
         /**
          * Whether to distinguish between uppercase and lowercase letters when searching
          */
@@ -1275,6 +1717,10 @@ declare namespace Config {
          * Whether to search embedded blocks
          */
         embedBlock: boolean;
+        /**
+         * Whether to distinguish between Simplified and Traditional Chinese characters when searching
+         */
+        hanSensitive: boolean;
         /**
          * Whether to search heading blocks
          */
@@ -1297,6 +1743,7 @@ declare namespace Config {
         indexAssetPath: boolean;
         /**
          * Number of search results displayed
+         * 有效范围为 32–10240；小于 1 回退 64，1–31 提升至 32，大于 10240 截断至 10240
          */
         limit: number;
         /**
@@ -1372,6 +1819,60 @@ declare namespace Config {
     }
 
     /**
+     * A named secret. The value is AES-encrypted at rest on the kernel side.
+     * The secret is only interpolated into HTTP outbound requests when the
+     * destination host is in the allowed hosts list; an empty list denies all
+     * HTTP requests. stdio MCP server environment variables are not restricted
+     * by this list.
+     */
+    export interface ISecret {
+        name: string;
+        value: string;
+        allowedHosts: string[];
+    }
+
+    /**
+     * Global secrets store. Referenced via {{secrets.NAME}} placeholders by the
+     * agent http_request tool and MCP server headers.
+     */
+    export interface ISecrets {
+        items: ISecret[];
+    }
+
+    /**
+     * A named variable. The value is stored in plain text (non-sensitive data).
+     */
+    export interface IVariable {
+        name: string;
+        value: string;
+    }
+
+    /**
+     * Global variables store. Referenced via {{vars.NAME}} placeholders by the
+     * agent http_request tool and MCP server headers.
+     */
+    /**
+     * Encrypted notebook global settings
+     * 加密笔记本全局设置
+     */
+    export interface INotebookCrypto {
+        /**
+         * Whether encrypted notebook feature is enabled
+         * 加密笔记本功能是否已启用
+         */
+        enabled: boolean;
+        /**
+         * Auto-lock after idle minutes, 0 = disabled
+         * 自动锁定闲置分钟数，0 表示禁用
+         */
+        autoLockMinutes: number;
+    }
+
+    export interface IVariables {
+        items: IVariable[];
+    }
+
+    /**
      * SiYuan workspace content statistics
      */
     export interface IStat {
@@ -1426,6 +1927,11 @@ declare namespace Config {
          */
         generateConflictDoc: boolean;
         /**
+         * 当前设备的资源下载模式，0：全部下载，1：按需下载。
+         * 仅接受 0、1；启动时越界值回退 0，写入 API 拒绝非法值并保留资源完整性检查
+         */
+        assetDownloadMode: number;
+        /**
          * Synchronization mode
          * - `0`: Not set
          * - `1`: Automatic synchronization
@@ -1460,6 +1966,18 @@ declare namespace Config {
         synced: number;
         webdav: ISyncWebDAV;
         local: ISyncLocal;
+        lan: ISyncLAN;
+    }
+
+    export interface ISyncLAN {
+        /**
+         * Whether to enable LAN sync acceleration
+         */
+        enabled: boolean;
+        /**
+         * Maximum number of concurrent peer requests
+         */
+        maxConcurrentReqs: number;
     }
 
     /**
@@ -1569,6 +2087,7 @@ declare namespace Config {
          * - `0`: Do not boot automatically
          * - `1`: Boot automatically
          * - `2`: Boot automatically + Minimize UI
+         * 仅接受 0、1、2，越界值在配置规范化时回退 0
          */
         autoLaunch2: number;
         /**
@@ -1583,7 +2102,7 @@ declare namespace Config {
          * - `harmony`: HarmonyOS device
          * - `std`: Desktop Electron environment
          */
-        container: TSystemContainer;
+        container: string;
         /**
          * The absolute path of the `data` directory of the current workspace
          */
@@ -1593,6 +2112,10 @@ declare namespace Config {
          */
         downloadInstallPkg: boolean;
         /**
+         * 更新通道
+         */
+        updateChannel?: string;
+        /**
          * The absolute path of the user's home directory for the current operating system user
          */
         homeDir: string;
@@ -1600,10 +2123,6 @@ declare namespace Config {
          * The UUID of the current session
          */
         id: string;
-        /**
-         * Whether the current version is an internal test version
-         */
-        isInsider: boolean;
         /**
          * Whether the current version is a Microsoft Store version
          */
@@ -1616,8 +2135,10 @@ declare namespace Config {
          * Lock screen mode
          * - `0`: Manual
          * - `1`: Manual + Follow the operating system
+         * 仅接受 0、1，越界值在配置规范化时回退 0
          */
         lockScreenMode: number;
+        encryptedNotebookFollowSystemLock: boolean;
         /**
          * The name of the current device
          */
@@ -1640,11 +2161,19 @@ declare namespace Config {
          * - `linux`: Linux
          * - `windows`: Windows
          */
-        os: TSystemOS;
+        os: string;
         /**
          * Operating system platform name
          */
         osPlatform: string;
+        /**
+         * Whether the current boot is in safe mode (disables code snippets, plugins, custom theme and icon)
+         */
+        safeMode: boolean;
+        /**
+         * 是否在独立窗口中打开设置界面，仅桌面 Electron 客户端生效，默认 false。
+         */
+        settingsWindow: boolean;
         /**
          * The absolute path of the workspace directory
          */
@@ -1665,6 +2194,8 @@ declare namespace Config {
      */
     export type TSystemContainer = "docker" | "android" | "ios" | "harmony" | "std";
 
+    export type TUpdateChannel = "stable" | "beta" | "alpha";
+
     /**
      * SiYuan Network proxy configuration
      */
@@ -1679,22 +2210,24 @@ declare namespace Config {
         port: string;
         /**
          * The protocol used by the proxy server
-         * - Empty String: Use the system proxy settings
+         * - Empty String: Direct connection
+         * - `system`: Use the system proxy settings
          * - `http`: HTTP
          * - `https`: HTTPS
          * - `socks5`: SOCKS5
          */
-        scheme: TSystemNetworkProxyScheme;
+        scheme: string;
     }
 
     /**
      * The protocol used by the proxy server
-     * - Empty String: Use the system proxy settings
+     * - Empty String: Direct connection
+     * - `system`: Use the system proxy settings
      * - `http`: HTTP
      * - `https`: HTTPS
      * - `socks5`: SOCKS5
      */
-    export type TSystemNetworkProxyScheme = "" | "http" | "https" | "socks5";
+    export type TSystemNetworkProxyScheme = "" | "system" | "http" | "https" | "socks5";
 
     /**
      * The operating system name determined at compile time (obtained using the command `go tool
@@ -1727,14 +2260,14 @@ declare namespace Config {
      * SiYuan UI layout related configuration
      */
     export interface IUiLayout {
-        bottom: IUILayoutDock;
+        bottom?: IUILayoutDock;
         /**
          * Whether to hide the sidebar
          */
-        hideDock: boolean;
-        layout: IUILayoutLayout;
-        left: IUILayoutDock;
-        right: IUILayoutDock;
+        hideDock?: boolean;
+        layout?: TPersistedUILayoutItem;
+        left?: IUILayoutDock;
+        right?: IUILayoutDock;
     }
 
     /**
@@ -1744,11 +2277,11 @@ declare namespace Config {
         /**
          * Dock area list
          */
-        data: Array<IUILayoutDockTab[]>;
+        data?: Array<IUILayoutDockTab[]>;
         /**
          * Whether to pin the dock
          */
-        pin: boolean;
+        pin?: boolean;
     }
 
     /**
@@ -1756,22 +2289,18 @@ declare namespace Config {
      */
     export interface IUILayoutDockTab {
         /**
-         * Dock tab hotkey
-         */
-        hotkey?: string;
-        /**
          * Hotkey description ID
          */
         hotkeyLangId?: string;
         /**
          * Tab icon ID
          */
-        icon: string;
+        icon?: string;
         /**
          * Whether to display the tab
          */
-        show: boolean;
-        size: IUILayoutDockPanelSize;
+        show?: boolean;
+        size?: IUILayoutDockPanelSize;
         /**
          * Tab title
          */
@@ -1779,7 +2308,7 @@ declare namespace Config {
         /**
          * Tab type
          */
-        type: TDock | string;
+        type?: TDock | string;
     }
 
     /**
@@ -1789,16 +2318,30 @@ declare namespace Config {
         /**
          * Tab height (unit: px)
          */
-        height: number | null;
+        height?: number | null;
         /**
          * Tab width (unit: px)
          */
-        width: number | null;
+        width?: number | null;
     }
 
     /**
      * SiYuan layout item
      */
+    export type TPersistedUILayoutItem = (
+        ({instance?: "Layout"} & Partial<Pick<IUILayoutLayout, "direction" | "size" | "type" | "resize">>) |
+        ({instance: "Wnd"} & Partial<Pick<IUILayoutWnd, "resize" | "width" | "height">>) |
+        ({instance: "Tab"} & Partial<Pick<IUILayoutTab, "title" | "lang" | "icon" | "docIcon" | "pin" | "active" | "activeTime">>) |
+        ({instance: "Editor"} & Partial<Pick<IUILayoutTabEditor, "blockId" | "rootId" | "notebookId" | "scrollAttr">>) |
+        ({instance: "Asset"} & Partial<Pick<IUILayoutTabAsset, "path" | "page">>) |
+        ({instance: "Backlink"} & Partial<Pick<IUILayoutTabBacklink, "blockId" | "rootId" | "notebookId" | "type">>) |
+        ({instance: "Graph"} & Partial<Pick<IUILayoutTabGraph, "blockId" | "rootId" | "notebookId" | "type">>) |
+        ({instance: "Outline"} & Partial<Pick<IUILayoutTabOutline, "blockId" | "notebookId" | "type" | "isPreview">>) |
+        ({instance: "Search"} & Partial<Pick<IUILayoutTabSearch, "config">>) |
+        ({instance: "Custom"} & Partial<Pick<IUILayoutTabCustom, "customModelType" | "customModelData">>) |
+        {instance: "Bookmark" | "Files" | "Tag"}
+    ) & {children?: TPersistedUILayoutItem[] | TPersistedUILayoutItem};
+
     export type TUILayoutItem = IUILayoutLayout
         | IUILayoutWnd
         | IUILayoutTab
@@ -1959,6 +2502,10 @@ declare namespace Config {
          */
         rootId: string;
         /**
+         * (Backlink) Notebook ID
+         */
+        notebookId?: string;
+        /**
          * (Backlink) Tab type
          * - `pin`: Pinned panel
          * - `local`: The panel of the current document
@@ -2014,6 +2561,11 @@ declare namespace Config {
          */
         blockId: string;
         /**
+         * 数据库行预览块 ID
+         */
+        databaseRowId?: string;
+        databaseRow?: import("../protyle/render/av/openDatabaseRow").IDatabaseRowOpenData;
+        /**
          * Object name
          */
         instance: "Editor";
@@ -2031,6 +2583,10 @@ declare namespace Config {
          * (Editor) Document block ID
          */
         rootId: string;
+        /**
+         * 窗口布局独立保存的阅读位置，优先于全局文档阅读位置
+         */
+        scrollAttr?: IScrollAttr;
     }
 
     /**
@@ -2052,6 +2608,10 @@ declare namespace Config {
          * (Graph) Block ID
          */
         blockId: string;
+        /**
+         * (Graph) Notebook ID
+         */
+        notebookId?: string;
         /**
          * Object name
          */
@@ -2086,6 +2646,10 @@ declare namespace Config {
          * (Outline) Block ID
          */
         blockId: string;
+        /**
+         * (Outline) Notebook ID
+         */
+        notebookId?: string;
         /**
          * Object name
          */
@@ -2136,6 +2700,10 @@ declare namespace Config {
      */
     export interface IUILayoutTabSearchConfig {
         /**
+         * Whether the search contains encrypted notebook data that must not be persisted
+         */
+        sensitive?: boolean;
+        /**
          * 搜索传入的查询内容
          */
         query?: string;
@@ -2164,6 +2732,7 @@ declare namespace Config {
          * - `1`: Query syntax
          * - `2`: SQL
          * - `3`: Regular expression
+         * - `4`: Fuzzy search
          * @default 0
          */
         method?: number;
@@ -2199,6 +2768,16 @@ declare namespace Config {
          */
         sort?: number;
         types?: IUILayoutTabSearchConfigTypes;
+        subTypes?: IUILayoutTabSearchConfigSubTypes;
+    }
+
+    /**
+     * 子类型按父类型独立筛选，组内全否表示不限制子类型。
+     */
+    export interface IUILayoutTabSearchConfigSubTypes {
+        heading: {h1: boolean, h2: boolean, h3: boolean, h4: boolean, h5: boolean, h6: boolean};
+        list: {o: boolean, u: boolean, t: boolean};
+        listItem: {o: boolean, u: boolean, t: boolean};
     }
 
     /**
@@ -2350,6 +2929,13 @@ declare namespace Config {
          * @default false
          */
         callout: boolean;
+        tabs?: boolean;
+        tabItem?: boolean;
+        /** 思维导图搜索；旧配置继承全局设置，初始默认开启 */
+        mindmap?: boolean;
+        /** 思维导图项搜索；旧配置继承全局设置，初始默认关闭 */
+        mindmapItem?: boolean;
+        customBlock?: boolean;
         /**
          * Search results contain code blocks
          * @default false

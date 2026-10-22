@@ -29,7 +29,7 @@
 
 ## 💡 Introduction
 
-RW Notes is a privacy-first personal knowledge management system with fine-grained block references and Markdown WYSIWYG editing.
+RW Notes is a fork of SiYuan, starting from upstream 3.8.8. Its planned v0 adds shared organizations, human/AI collaboration and offline-first desktop/mobile editing. These remain implementation goals; see the [product plan](specs/saas-plan.md) and [pinned baseline](specs/upstream-baseline.md).
 
 ![feature0.png](https://b3logfile.com/file/2025/11/feature0-GfbhEqf.png)
 
@@ -60,12 +60,12 @@ RW Notes is a privacy-first personal knowledge management system with fine-grain
   * Table view
 * Flashcard spaced repetition
 * AI writing and Q/A chat via OpenAI API
-* Tesseract OCR
+* OCR
 * Multi-tab, drag and drop to split screen
 * Template snippet
 * JavaScript/CSS snippet
 * Docker deployment
-* [API](API.md)
+* [API](docs/API.md)
 
 ## 🐳 Docker Hosting
 
@@ -85,7 +85,7 @@ docker run -d \
   -p 6806:6806 \
   -e PUID=1001 \
   -e PGID=1002 \
-  rw-notes \
+  rw-notes serve \
   --workspace=/rw-notes/workspace/ \
   --accessAuthCode=change-me
 ```
@@ -98,7 +98,7 @@ services:
   main:
     build: .
     image: rw-notes
-    command: ["--workspace=/rw-notes/workspace/", "--accessAuthCode=${AUTH_CODE}"]
+    command: ["serve", "--workspace=/rw-notes/workspace/", "--accessAuthCode=${AUTH_CODE}"]
     ports:
       - 6806:6806
     volumes:

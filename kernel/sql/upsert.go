@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -43,10 +43,14 @@ func init() {
 }
 
 const (
-	BlocksInsert                   = "INSERT INTO blocks (id, parent_id, root_id, hash, box, path, hpath, name, alias, memo, tag, content, fcontent, markdown, length, type, subtype, ial, sort, created, updated) VALUES %s"
-	BlocksFTSInsert                = "INSERT INTO blocks_fts (id, parent_id, root_id, hash, box, path, hpath, name, alias, memo, tag, content, fcontent, markdown, length, type, subtype, ial, sort, created, updated) VALUES %s"
-	BlocksFTSCaseInsensitiveInsert = "INSERT INTO blocks_fts_case_insensitive (id, parent_id, root_id, hash, box, path, hpath, name, alias, memo, tag, content, fcontent, markdown, length, type, subtype, ial, sort, created, updated) VALUES %s"
-	BlocksPlaceholder              = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+	BlocksInsert      = "INSERT INTO blocks (id, parent_id, root_id, hash, box, path, hpath, name, alias, memo, tag, content, fcontent, markdown, length, type, subtype, ial, sort, created, updated) VALUES %s"
+	BlocksPlaceholder = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+
+	// blocks_fts 采用 external content 模式（content='blocks'），写入时必须显式提供 rowid，
+	// 该 rowid 取自 blocks 表的隐式 rowid，否则 FTS rowid 与 blocks rowid 脱钩会导致
+	// snippet/highlight 回表取错行、按 rowid 删除静默失效。首列即为 rowid。
+	BlocksFTSInsert      = "INSERT INTO blocks_fts (rowid, id, parent_id, root_id, hash, box, path, hpath, name, alias, memo, tag, content, fcontent, markdown, length, type, subtype, ial, sort, created, updated) VALUES %s"
+	BlocksFTSPlaceholder = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 
 	SpansInsert      = "INSERT INTO spans (id, block_id, root_id, box, path, content, markdown, type, ial) VALUES %s"
 	SpansPlaceholder = "(?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -57,7 +61,7 @@ const (
 	FileAnnotationRefsPlaceholder = "(?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
-func insertBlocks(tx *sql.Tx, blocks []*Block, context map[string]interface{}) (err error) {
+func insertBlocks(tx *sql.Tx, blocks []*Block, context map[string]any) (err error) {
 	if 1 > len(blocks) {
 		return
 	}
@@ -82,9 +86,9 @@ func insertBlocks(tx *sql.Tx, blocks []*Block, context map[string]interface{}) (
 	return
 }
 
-func insertBlocks0(tx *sql.Tx, bulk []*Block, context map[string]interface{}) (err error) {
+func insertBlocks0(tx *sql.Tx, bulk []*Block, context map[string]any) (err error) {
 	valueStrings := make([]string, 0, len(bulk))
-	valueArgs := make([]interface{}, 0, len(bulk)*strings.Count(BlocksPlaceholder, "?"))
+	valueArgs := make([]any, 0, len(bulk)*strings.Count(BlocksPlaceholder, "?"))
 	hashBuf := bytes.Buffer{}
 	for _, b := range bulk {
 		valueStrings = append(valueStrings, BlocksPlaceholder)
@@ -123,16 +127,49 @@ func insertBlocks0(tx *sql.Tx, bulk []*Block, context map[string]interface{}) (e
 	// 使用下面的 EvtSQLInsertBlocksFTS 就可以了
 	//eventbus.Publish(eventbus.EvtSQLInsertBlocks, context, current, total, len(bulk), evtHash)
 
-	stmt = fmt.Sprintf(BlocksFTSInsert, strings.Join(valueStrings, ","))
-	if err = prepareExecInsertTx(tx, stmt, valueArgs); err != nil {
+	// external content 模式下，FTS 行必须使用 blocks 的 rowid。刚插入的 blocks 行在同一事务内可见，
+	// 这里按 id 反查 rowid，再用与 bulk 顺序对齐的 rowid 拼装 FTS 写入参数。
+	blockRowIDs, err := queryBlockRowIDsTx(tx, bulk)
+	if err != nil {
 		return
 	}
-
-	if !caseSensitive {
-		stmt = fmt.Sprintf(BlocksFTSCaseInsensitiveInsert, strings.Join(valueStrings, ","))
-		if err = prepareExecInsertTx(tx, stmt, valueArgs); err != nil {
+	ftsValueStrings := make([]string, 0, len(bulk))
+	ftsValueArgs := make([]any, 0, len(bulk)*strings.Count(BlocksFTSPlaceholder, "?"))
+	for _, b := range bulk {
+		rowID, ok := blockRowIDs[b.ID]
+		if !ok {
+			// 理论上不会发生（刚插入即反查），防御性处理避免错位
+			logging.LogErrorf("query block rowid failed after insert: id=%s not found", b.ID)
+			err = fmt.Errorf("block rowid not found after insert: %s", b.ID)
 			return
 		}
+		ftsValueStrings = append(ftsValueStrings, BlocksFTSPlaceholder)
+		ftsValueArgs = append(ftsValueArgs, rowID)
+		ftsValueArgs = append(ftsValueArgs, any(b.ID))
+		ftsValueArgs = append(ftsValueArgs, any(b.ParentID))
+		ftsValueArgs = append(ftsValueArgs, any(b.RootID))
+		ftsValueArgs = append(ftsValueArgs, any(b.Hash))
+		ftsValueArgs = append(ftsValueArgs, any(b.Box))
+		ftsValueArgs = append(ftsValueArgs, any(b.Path))
+		ftsValueArgs = append(ftsValueArgs, any(b.HPath))
+		ftsValueArgs = append(ftsValueArgs, any(b.Name))
+		ftsValueArgs = append(ftsValueArgs, any(b.Alias))
+		ftsValueArgs = append(ftsValueArgs, any(b.Memo))
+		ftsValueArgs = append(ftsValueArgs, any(b.Tag))
+		ftsValueArgs = append(ftsValueArgs, any(b.Content))
+		ftsValueArgs = append(ftsValueArgs, any(b.FContent))
+		ftsValueArgs = append(ftsValueArgs, any(b.Markdown))
+		ftsValueArgs = append(ftsValueArgs, any(b.Length))
+		ftsValueArgs = append(ftsValueArgs, any(b.Type))
+		ftsValueArgs = append(ftsValueArgs, any(b.SubType))
+		ftsValueArgs = append(ftsValueArgs, any(b.IAL))
+		ftsValueArgs = append(ftsValueArgs, any(b.Sort))
+		ftsValueArgs = append(ftsValueArgs, any(b.Created))
+		ftsValueArgs = append(ftsValueArgs, any(b.Updated))
+	}
+	stmt = fmt.Sprintf(BlocksFTSInsert, strings.Join(ftsValueStrings, ","))
+	if err = prepareExecInsertTx(tx, stmt, ftsValueArgs); err != nil {
+		return
 	}
 	hashBuf.WriteString("fts")
 	evtHash = fmt.Sprintf("%x", sha256.Sum256(hashBuf.Bytes()))[:7]
@@ -171,7 +208,7 @@ func insertAttribute0(tx *sql.Tx, bulk []*Attribute) (err error) {
 	}
 
 	valueStrings := make([]string, 0, len(bulk))
-	valueArgs := make([]interface{}, 0, len(bulk)*strings.Count(AttributesPlaceholder, "?"))
+	valueArgs := make([]any, 0, len(bulk)*strings.Count(AttributesPlaceholder, "?"))
 	for _, attr := range bulk {
 		valueStrings = append(valueStrings, AttributesPlaceholder)
 		valueArgs = append(valueArgs, attr.ID)
@@ -219,7 +256,7 @@ func insertAsset0(tx *sql.Tx, bulk []*Asset) (err error) {
 	}
 
 	valueStrings := make([]string, 0, len(bulk))
-	valueArgs := make([]interface{}, 0, len(bulk)*strings.Count(AssetsPlaceholder, "?"))
+	valueArgs := make([]any, 0, len(bulk)*strings.Count(AssetsPlaceholder, "?"))
 	for _, asset := range bulk {
 		valueStrings = append(valueStrings, AssetsPlaceholder)
 		valueArgs = append(valueArgs, asset.ID)
@@ -268,7 +305,7 @@ func insertSpans0(tx *sql.Tx, bulk []*Span) (err error) {
 	}
 
 	valueStrings := make([]string, 0, len(bulk))
-	valueArgs := make([]interface{}, 0, len(bulk)*strings.Count(SpansPlaceholder, "?"))
+	valueArgs := make([]any, 0, len(bulk)*strings.Count(SpansPlaceholder, "?"))
 	for _, span := range bulk {
 		valueStrings = append(valueStrings, SpansPlaceholder)
 		valueArgs = append(valueArgs, span.ID)
@@ -287,6 +324,15 @@ func insertSpans0(tx *sql.Tx, bulk []*Span) (err error) {
 }
 
 func insertBlockRefs(tx *sql.Tx, refs []*Ref) (err error) {
+	validRefs := refs[:0]
+	for _, ref := range refs {
+		if nil == ref || "" == strings.TrimSpace(ref.DefBlockID) || "" == strings.TrimSpace(ref.BlockID) ||
+			"" == strings.TrimSpace(ref.RootID) {
+			continue
+		}
+		validRefs = append(validRefs, ref)
+	}
+	refs = validRefs
 	if 1 > len(refs) {
 		return
 	}
@@ -317,7 +363,7 @@ func insertRefs0(tx *sql.Tx, bulk []*Ref) (err error) {
 	}
 
 	valueStrings := make([]string, 0, len(bulk))
-	valueArgs := make([]interface{}, 0, len(bulk)*strings.Count(RefsPlaceholder, "?"))
+	valueArgs := make([]any, 0, len(bulk)*strings.Count(RefsPlaceholder, "?"))
 	for _, ref := range bulk {
 		valueStrings = append(valueStrings, RefsPlaceholder)
 		valueArgs = append(valueArgs, ref.ID)
@@ -333,7 +379,7 @@ func insertRefs0(tx *sql.Tx, bulk []*Ref) (err error) {
 		valueArgs = append(valueArgs, ref.Markdown)
 		valueArgs = append(valueArgs, ref.Type)
 
-		putRefCache(ref)
+		putRefCache(ref.Box, ref)
 	}
 	stmt := fmt.Sprintf("INSERT INTO refs (id, def_block_id, def_block_parent_id, def_block_root_id, def_block_path, block_id, root_id, box, path, content, markdown, type) VALUES %s", strings.Join(valueStrings, ","))
 	err = prepareExecInsertTx(tx, stmt, valueArgs)
@@ -371,7 +417,7 @@ func insertFileAnnotationRefs0(tx *sql.Tx, bulk []*FileAnnotationRef) (err error
 	}
 
 	valueStrings := make([]string, 0, len(bulk))
-	valueArgs := make([]interface{}, 0, len(bulk)*strings.Count(FileAnnotationRefsPlaceholder, "?"))
+	valueArgs := make([]any, 0, len(bulk)*strings.Count(FileAnnotationRefsPlaceholder, "?"))
 	for _, ref := range bulk {
 		valueStrings = append(valueStrings, FileAnnotationRefsPlaceholder)
 		valueArgs = append(valueArgs, ref.ID)
@@ -389,15 +435,18 @@ func insertFileAnnotationRefs0(tx *sql.Tx, bulk []*FileAnnotationRef) (err error
 	return
 }
 
-func indexTree(tx *sql.Tx, tree *parse.Tree, context map[string]interface{}) (err error) {
+func indexTree(tx *sql.Tx, tree *parse.Tree, context map[string]any) (err error) {
 	blocks, spans, assets, attributes := fromTree(tree.Root, tree)
 	refs, fileAnnotationRefs := refsFromTree(tree)
 	err = insertTree0(tx, tree, context, blocks, spans, assets, attributes, refs, fileAnnotationRefs)
 	return
 }
 
-func upsertTree(tx *sql.Tx, tree *parse.Tree, context map[string]interface{}) (err error) {
-	oldBlockHashes := queryBlockHashes(tree.ID)
+func upsertTree(tx *sql.Tx, tree *parse.Tree, context map[string]any) (err error) {
+	if isIndexIgnored(tree) {
+		return
+	}
+	oldBlockHashes := queryBlockHashes(tx, tree.ID)
 	blocks, spans, assets, attributes := fromTree(tree.Root, tree)
 	newBlockHashes := map[string]string{}
 	for _, block := range blocks {
@@ -452,15 +501,19 @@ func upsertTree(tx *sql.Tx, tree *parse.Tree, context map[string]interface{}) (e
 	return err
 }
 
-func insertTree0(tx *sql.Tx, tree *parse.Tree, context map[string]interface{},
+func isIndexIgnored(tree *parse.Tree) bool {
+	if ignoreLines := getIndexIgnoreLines(); 0 < len(ignoreLines) {
+		matcher := ignore.CompileIgnoreLines(ignoreLines...)
+		return matcher.MatchesPath("/" + path.Join(tree.Box, tree.Path))
+	}
+	return false
+}
+
+func insertTree0(tx *sql.Tx, tree *parse.Tree, context map[string]any,
 	blocks []*Block, spans []*Span, assets []*Asset, attributes []*Attribute,
 	refs []*Ref, fileAnnotationRefs []*FileAnnotationRef) (err error) {
-	if ignoreLines := getIndexIgnoreLines(); 0 < len(ignoreLines) {
-		// Support ignore index https://github.com/siyuan-note/siyuan/issues/9198
-		matcher := ignore.CompileIgnoreLines(ignoreLines...)
-		if matcher.MatchesPath("/" + path.Join(tree.Box, tree.Path)) {
-			return
-		}
+	if isIndexIgnored(tree) {
+		return
 	}
 
 	if err = insertBlocks(tx, blocks, context); err != nil {

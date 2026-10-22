@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,6 +17,7 @@
 package model
 
 import (
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -38,6 +39,130 @@ import (
 	"github.com/siyuan-note/siyuan/kernel/treenode"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
+
+// ValidateFlashcardBlockIDs 只允许普通笔记本中可确认存在的块进入全局闪卡存储。
+func ValidateFlashcardBlockIDs(blockIDs []string) error {
+	return validateFlashcardBlockIDs(blockIDs, treenode.GetBlockTree, IsEncryptedBox)
+}
+
+func validateFlashcardBlockIDs(blockIDs []string, getBlockTree func(string) *treenode.BlockTree, isEncryptedBox func(string) bool) error {
+	for _, blockID := range blockIDs {
+		bt := getBlockTree(blockID)
+		if bt == nil {
+			return errors.New(Conf.Language(180))
+		}
+		if isEncryptedBox(bt.BoxID) {
+			return errors.New(Conf.Language(393))
+		}
+	}
+	return nil
+}
+
+func validateFlashcardTree(rootID string) error {
+	return ValidateFlashcardBlockIDs([]string{rootID})
+}
+
+func isSupportedFlashcardBlock(blockID string) bool {
+	bt := treenode.GetBlockTreeInExactBox(blockID, "")
+	return bt != nil && !IsEncryptedBox(bt.BoxID)
+}
+
+func filterSupportedFlashcards(cards []riff.Card) (ret []riff.Card) {
+	for _, card := range cards {
+		if card == nil || !isSupportedFlashcardBlock(card.BlockID()) {
+			continue
+		}
+		ret = append(ret, card)
+	}
+	return
+}
+
+func removeFlashcardAttrs(tree *parse.Tree) {
+	if tree == nil || tree.Root == nil {
+		return
+	}
+	ast.Walk(tree.Root, func(node *ast.Node, entering bool) ast.WalkStatus {
+		if entering && node.IsBlock() {
+			node.RemoveIALAttr(NodeAttrRiffDecks)
+		}
+		return ast.WalkContinue
+	})
+}
+
+func validateFlashcardCard(deck *riff.Deck, cardID string) error {
+	if deck == nil {
+		return nil
+	}
+	card := deck.GetCard(cardID)
+	if card == nil {
+		return nil
+	}
+	return ValidateFlashcardBlockIDs([]string{card.BlockID()})
+}
+
+// ValidateFlashcardTransactions 在事务入队前校验所有闪卡操作。
+func ValidateFlashcardTransactions(transactions []*Transaction) error {
+	return ValidateFlashcardBlockIDs(flashcardBlockIDsToValidate(transactions))
+}
+
+func flashcardBlockIDsToValidate(transactions []*Transaction) (ret []string) {
+	for _, transaction := range transactions {
+		if transaction == nil {
+			continue
+		}
+		hasFlashcardOperation := false
+		for _, operation := range transaction.DoOperations {
+			if operation != nil && (operation.Action == "addFlashcards" || operation.Action == "removeFlashcards") {
+				hasFlashcardOperation = true
+				break
+			}
+		}
+		if !hasFlashcardOperation {
+			continue
+		}
+		insertedBlockIDs := map[string]struct{}{}
+		for _, operation := range transaction.DoOperations {
+			if operation == nil {
+				continue
+			}
+			if operation.Action == "insert" {
+				collectInsertedFlashcardBlockIDs(operation, insertedBlockIDs)
+			}
+			if operation.Action != "addFlashcards" && operation.Action != "removeFlashcards" {
+				continue
+			}
+			for _, blockID := range operation.BlockIDs {
+				if _, ok := insertedBlockIDs[blockID]; ok {
+					continue
+				}
+				ret = append(ret, blockID)
+			}
+		}
+	}
+	return
+}
+
+func collectInsertedFlashcardBlockIDs(operation *Operation, blockIDs map[string]struct{}) {
+	if ast.IsNodeIDPattern(operation.ID) {
+		blockIDs[operation.ID] = struct{}{}
+		return
+	}
+
+	data, ok := operation.Data.(string)
+	if !ok || data == "" {
+		return
+	}
+	tree := util.NewLute().BlockDOM2Tree(data)
+	if tree == nil || tree.Root == nil {
+		return
+	}
+	ast.Walk(tree.Root, func(node *ast.Node, entering bool) ast.WalkStatus {
+		if entering && node.IsBlock() && ast.IsNodeIDPattern(node.ID) {
+			blockIDs[node.ID] = struct{}{}
+		}
+		return ast.WalkContinue
+	})
+}
 
 func GetFlashcardsByBlockIDs(blockIDs []string) (ret []*Block) {
 	deckLock.Lock()
@@ -93,6 +218,15 @@ func SetFlashcardsDueTime(cardDues []*SetFlashcardDueTime) (err error) {
 
 	for _, cardDue := range cardDues {
 		card := deck.GetCard(cardDue.ID)
+		if card == nil {
+			continue
+		}
+		if err = ValidateFlashcardBlockIDs([]string{card.BlockID()}); err != nil {
+			return
+		}
+	}
+	for _, cardDue := range cardDues {
+		card := deck.GetCard(cardDue.ID)
 		if nil == card {
 			continue
 		}
@@ -109,12 +243,28 @@ func SetFlashcardsDueTime(cardDues []*SetFlashcardDueTime) (err error) {
 
 	if err = deck.Save(); err != nil {
 		logging.LogErrorf("save deck [%s] failed: %s", builtinDeckID, err)
+	} else {
+		IncSyncIfNeeded(filepath.Join(getRiffDir(), builtinDeckID+".deck"), filepath.Join(getRiffDir(), builtinDeckID+".cards"))
 	}
 	return
 }
 
-func ResetFlashcards(typ, id, deckID string, blockIDs []string) {
+func ResetFlashcards(typ, id, deckID string, blockIDs []string) error {
 	// Support resetting the learning progress of flashcards https://github.com/siyuan-note/siyuan/issues/9564
+
+	if err := ValidateFlashcardBlockIDs(blockIDs); err != nil {
+		return err
+	}
+	switch typ {
+	case "notebook":
+		if IsEncryptedBox(id) {
+			return errors.New(Conf.Language(393))
+		}
+	case "tree":
+		if err := validateFlashcardTree(id); err != nil {
+			return err
+		}
+	}
 
 	if 0 < len(blockIDs) {
 		if "" == deckID {
@@ -133,11 +283,11 @@ func ResetFlashcards(typ, id, deckID string, blockIDs []string) {
 				}
 				resetFlashcards(deckID, blockIDs)
 			}
-			return
+			return nil
 		}
 
 		resetFlashcards(deckID, blockIDs)
-		return
+		return nil
 	}
 
 	var blocks []*Block
@@ -178,6 +328,7 @@ func ResetFlashcards(typ, id, deckID string, blockIDs []string) {
 
 	blockIDs = gulu.Str.RemoveDuplicatedElem(blockIDs)
 	resetFlashcards(deckID, blockIDs)
+	return nil
 }
 
 func resetFlashcards(deckID string, blockIDs []string) {
@@ -203,7 +354,7 @@ func resetFlashcards(deckID string, blockIDs []string) {
 	}
 
 	PerformTransactions(&transactions)
-	FlushTxQueue()
+	WaitForTransactions(transactions)
 }
 
 func GetFlashcardNotebooks() (ret []*Box) {
@@ -215,6 +366,10 @@ func GetFlashcardNotebooks() (ret []*Box) {
 	deckBlockIDs := deck.GetBlockIDs()
 	boxes := Conf.GetOpenedBoxes()
 	for _, box := range boxes {
+		// 加密笔记本不支持闪卡，不在闪卡笔记本列表中展示
+		if IsEncryptedBox(box.ID) {
+			continue
+		}
 		newFlashcardCount, dueFlashcardCount, flashcardCount := countBoxFlashcard(box.ID, deck, deckBlockIDs)
 		if 0 < flashcardCount {
 			box.NewFlashcardCount = newFlashcardCount
@@ -227,6 +382,9 @@ func GetFlashcardNotebooks() (ret []*Box) {
 }
 
 func countTreeFlashcard(rootID string, deck *riff.Deck, deckBlockIDs []string) (newFlashcardCount, dueFlashcardCount, flashcardCount int) {
+	if validateFlashcardTree(rootID) != nil {
+		return
+	}
 	blockIDsMap, blockIDs := getTreeSubTreeChildBlocks(rootID)
 	for _, deckBlockID := range deckBlockIDs {
 		if blockIDsMap[deckBlockID] {
@@ -245,6 +403,9 @@ func countTreeFlashcard(rootID string, deck *riff.Deck, deckBlockIDs []string) (
 }
 
 func countBoxFlashcard(boxID string, deck *riff.Deck, deckBlockIDs []string) (newFlashcardCount, dueFlashcardCount, flashcardCount int) {
+	if IsEncryptedBox(boxID) {
+		return
+	}
 	blockIDsMap, blockIDs := getBoxBlocks(boxID)
 	for _, deckBlockID := range deckBlockIDs {
 		if blockIDsMap[deckBlockID] {
@@ -269,6 +430,9 @@ var (
 
 func GetNotebookFlashcards(boxID string, page, pageSize int) (blocks []*Block, total, pageCount int) {
 	blocks = []*Block{}
+	if IsEncryptedBox(boxID) {
+		return
+	}
 
 	entries, err := os.ReadDir(filepath.Join(util.DataDir, boxID))
 	if err != nil {
@@ -317,12 +481,18 @@ func GetNotebookFlashcards(boxID string, page, pageSize int) (blocks []*Block, t
 
 func GetTreeFlashcards(rootID string, page, pageSize int) (blocks []*Block, total, pageCount int) {
 	blocks = []*Block{}
+	if validateFlashcardTree(rootID) != nil {
+		return
+	}
 	cards := getTreeSubTreeFlashcards(rootID)
 	blocks, total, pageCount = getCardsBlocks(cards, page, pageSize)
 	return
 }
 
 func getTreeSubTreeFlashcards(rootID string) (ret []riff.Card) {
+	if validateFlashcardTree(rootID) != nil {
+		return
+	}
 	deck := Decks[builtinDeckID]
 	if nil == deck {
 		return
@@ -342,6 +512,9 @@ func getTreeSubTreeFlashcards(rootID string) (ret []riff.Card) {
 }
 
 func getTreeFlashcards(rootID string) (ret []riff.Card) {
+	if validateFlashcardTree(rootID) != nil {
+		return
+	}
 	deck := Decks[builtinDeckID]
 	if nil == deck {
 		return
@@ -378,23 +551,28 @@ func GetDeckFlashcards(deckID string, page, pageSize int) (blocks []*Block, tota
 		cards = append(cards, deck.GetCardsByBlockIDs(blockIDs)...)
 	}
 
+	cards = filterSupportedFlashcards(cards)
 	blocks, total, pageCount = getCardsBlocks(cards, page, pageSize)
 	return
 }
 
-func getCardsBlocks(cards []riff.Card, page, pageSize int) (blocks []*Block, total, pageCount int) {
-	// sort by due date asc https://github.com/siyuan-note/siyuan/pull/9673
+// sortFlashcardsByDue 按到期时间升序排列，新卡的零到期时间排在前面，相同时间按卡片 ID 排列。
+func sortFlashcardsByDue(cards []riff.Card) {
 	sort.Slice(cards, func(i, j int) bool {
 		due1 := cards[i].(*riff.FSRSCard).C.Due
 		due2 := cards[j].(*riff.FSRSCard).C.Due
-		if due1.IsZero() || due2.IsZero() {
-			// Improve flashcard management sorting https://github.com/siyuan-note/siyuan/issues/14686
+		if due1.Equal(due2) {
 			cid1 := cards[i].ID()
 			cid2 := cards[j].ID()
 			return cid1 < cid2
 		}
 		return due1.Before(due2)
 	})
+}
+
+func getCardsBlocks(cards []riff.Card, page, pageSize int) (blocks []*Block, total, pageCount int) {
+	cards = filterSupportedFlashcards(cards)
+	sortFlashcardsByDue(cards)
 
 	total = len(cards)
 	pageCount = int(math.Ceil(float64(total) / float64(pageSize)))
@@ -471,6 +649,12 @@ func ReviewFlashcard(deckID, cardID string, rating riff.Rating, reviewedCardIDs 
 	waitForSyncingStorages()
 
 	deck := Decks[deckID]
+	if deck == nil {
+		return
+	}
+	if err = validateFlashcardCard(deck, cardID); err != nil {
+		return
+	}
 	card := deck.GetCard(cardID)
 	if nil == card {
 		return
@@ -494,10 +678,13 @@ func ReviewFlashcard(deckID, cardID string, rating riff.Rating, reviewedCardIDs 
 		return
 	}
 
+	defer IncSyncIfNeeded(filepath.Join(getRiffDir(), deckID+".deck"), filepath.Join(getRiffDir(), deckID+".cards"))
+
 	if err = deck.SaveLog(log); err != nil {
 		logging.LogErrorf("save review log [%s] failed: %s", deckID, err)
 		return
 	}
+	IncSyncIfNeeded(filepath.Join(getRiffDir(), "logs", time.Now().Format("200601")+".msgpack"))
 
 	_, unreviewedCount, _, _ := getDueFlashcards(deckID, reviewedCardIDs)
 	if 1 > unreviewedCount {
@@ -515,6 +702,12 @@ func SkipReviewFlashcard(deckID, cardID string) (err error) {
 	waitForSyncingStorages()
 
 	deck := Decks[deckID]
+	if deck == nil {
+		return
+	}
+	if err = validateFlashcardCard(deck, cardID); err != nil {
+		return
+	}
 	card := deck.GetCard(cardID)
 	if nil == card {
 		return
@@ -554,6 +747,12 @@ func newFlashcard(card riff.Card, deckID string, now time.Time) *Flashcard {
 }
 
 func GetNotebookDueFlashcards(boxID string, reviewedCardIDs []string) (ret []*Flashcard, unreviewedCount, unreviewedNewCardCount, unreviewedOldCardCount int, err error) {
+	confFlashcardSnapshot := Conf.LoadFlashcard()
+
+	if IsEncryptedBox(boxID) {
+		err = errors.New(Conf.Language(393))
+		return
+	}
 	deckLock.Lock()
 	defer deckLock.Unlock()
 
@@ -591,7 +790,7 @@ func GetNotebookDueFlashcards(boxID string, reviewedCardIDs []string) (ret []*Fl
 		return
 	}
 
-	cards, unreviewedCnt, unreviewedNewCardCnt, unreviewedOldCardCnt := getDeckDueCards(deck, reviewedCardIDs, treeBlockIDs, Conf.Flashcard.NewCardLimit, Conf.Flashcard.ReviewCardLimit, Conf.Flashcard.ReviewMode)
+	cards, unreviewedCnt, unreviewedNewCardCnt, unreviewedOldCardCnt := getDeckDueCards(deck, reviewedCardIDs, treeBlockIDs, confFlashcardSnapshot.NewCardLimit, confFlashcardSnapshot.ReviewCardLimit, confFlashcardSnapshot.ReviewMode)
 	now := time.Now()
 	for _, card := range cards {
 		ret = append(ret, newFlashcard(card, builtinDeckID, now))
@@ -606,6 +805,11 @@ func GetNotebookDueFlashcards(boxID string, reviewedCardIDs []string) (ret []*Fl
 }
 
 func GetTreeDueFlashcards(rootID string, reviewedCardIDs []string) (ret []*Flashcard, unreviewedCount, unreviewedNewCardCount, unreviewedOldCardCount int, err error) {
+	confFlashcardSnapshot := Conf.LoadFlashcard()
+
+	if err = validateFlashcardTree(rootID); err != nil {
+		return
+	}
 	deckLock.Lock()
 	defer deckLock.Unlock()
 
@@ -617,8 +821,8 @@ func GetTreeDueFlashcards(rootID string, reviewedCardIDs []string) (ret []*Flash
 	}
 
 	_, treeBlockIDs := getTreeSubTreeChildBlocks(rootID)
-	newCardLimit := Conf.Flashcard.NewCardLimit
-	reviewCardLimit := Conf.Flashcard.ReviewCardLimit
+	newCardLimit := confFlashcardSnapshot.NewCardLimit
+	reviewCardLimit := confFlashcardSnapshot.ReviewCardLimit
 	// 文档级新卡/复习卡上限控制 Document-level new card/review card limit control https://github.com/siyuan-note/siyuan/issues/9365
 	ial := sql.GetBlockAttrs(rootID)
 	if newCardLimitStr := ial["custom-riff-new-card-limit"]; "" != newCardLimitStr {
@@ -636,7 +840,7 @@ func GetTreeDueFlashcards(rootID string, reviewedCardIDs []string) (ret []*Flash
 		}
 	}
 
-	cards, unreviewedCnt, unreviewedNewCardCnt, unreviewedOldCardCnt := getDeckDueCards(deck, reviewedCardIDs, treeBlockIDs, newCardLimit, reviewCardLimit, Conf.Flashcard.ReviewMode)
+	cards, unreviewedCnt, unreviewedNewCardCnt, unreviewedOldCardCnt := getDeckDueCards(deck, reviewedCardIDs, treeBlockIDs, newCardLimit, reviewCardLimit, confFlashcardSnapshot.ReviewMode)
 	now := time.Now()
 	for _, card := range cards {
 		ret = append(ret, newFlashcard(card, builtinDeckID, now))
@@ -656,8 +860,11 @@ func getTreeSubTreeChildBlocks(rootID string) (treeBlockIDsMap map[string]bool, 
 	if nil == root {
 		return
 	}
+	if IsBoxDoc(root.BoxID, rootID) {
+		return getBoxBlocks(root.BoxID)
+	}
 
-	bts := treenode.GetBlockTreesByPathPrefix(strings.TrimSuffix(root.Path, ".sy"))
+	bts := treenode.GetBlockTreesByPathPrefix(root.BoxID, strings.TrimSuffix(root.Path, ".sy"))
 	for _, bt := range bts {
 		treeBlockIDsMap[bt.ID] = true
 		treeBlockIDs = append(treeBlockIDs, bt.ID)
@@ -701,13 +908,15 @@ func GetDueFlashcards(deckID string, reviewedCardIDs []string) (ret []*Flashcard
 }
 
 func getDueFlashcards(deckID string, reviewedCardIDs []string) (ret []*Flashcard, unreviewedCount, unreviewedNewCardCount, unreviewedOldCardCount int) {
+	confFlashcardSnapshot := Conf.LoadFlashcard()
+
 	deck := Decks[deckID]
 	if nil == deck {
 		logging.LogWarnf("deck not found [%s]", deckID)
 		return
 	}
 
-	cards, unreviewedCnt, unreviewedNewCardCnt, unreviewedOldCardCnt := getDeckDueCards(deck, reviewedCardIDs, nil, Conf.Flashcard.NewCardLimit, Conf.Flashcard.ReviewCardLimit, Conf.Flashcard.ReviewMode)
+	cards, unreviewedCnt, unreviewedNewCardCnt, unreviewedOldCardCnt := getDeckDueCards(deck, reviewedCardIDs, nil, confFlashcardSnapshot.NewCardLimit, confFlashcardSnapshot.ReviewCardLimit, confFlashcardSnapshot.ReviewMode)
 	now := time.Now()
 	for _, card := range cards {
 		ret = append(ret, newFlashcard(card, deckID, now))
@@ -722,6 +931,8 @@ func getDueFlashcards(deckID string, reviewedCardIDs []string) (ret []*Flashcard
 }
 
 func getAllDueFlashcards(reviewedCardIDs []string) (ret []*Flashcard, unreviewedCount, unreviewedNewCardCount, unreviewedOldCardCount int) {
+	confFlashcardSnapshot := Conf.LoadFlashcard()
+
 	now := time.Now()
 	for _, deck := range Decks {
 		if deck.ID != builtinDeckID {
@@ -730,7 +941,7 @@ func getAllDueFlashcards(reviewedCardIDs []string) (ret []*Flashcard, unreviewed
 			continue
 		}
 
-		cards, unreviewedCnt, unreviewedNewCardCnt, unreviewedOldCardCnt := getDeckDueCards(deck, reviewedCardIDs, nil, Conf.Flashcard.NewCardLimit, Conf.Flashcard.ReviewCardLimit, Conf.Flashcard.ReviewMode)
+		cards, unreviewedCnt, unreviewedNewCardCnt, unreviewedOldCardCnt := getDeckDueCards(deck, reviewedCardIDs, nil, confFlashcardSnapshot.NewCardLimit, confFlashcardSnapshot.ReviewCardLimit, confFlashcardSnapshot.ReviewMode)
 		unreviewedCount += unreviewedCnt
 		unreviewedNewCardCount += unreviewedNewCardCnt
 		unreviewedOldCardCount += unreviewedOldCardCnt
@@ -755,6 +966,9 @@ func (tx *Transaction) doRemoveFlashcards(operation *Operation) (ret *TxErr) {
 
 	deckID := operation.DeckID
 	blockIDs := operation.BlockIDs
+	if err := ValidateFlashcardBlockIDs(blockIDs); err != nil {
+		return &TxErr{code: TxErrCodePushMsg, msg: err.Error()}
+	}
 
 	if err := tx.removeBlocksDeckAttr(blockIDs, deckID); err != nil {
 		return &TxErr{code: TxErrCodeWriteTree, msg: err.Error(), id: deckID}
@@ -776,6 +990,10 @@ func (tx *Transaction) removeBlocksDeckAttr(blockIDs []string, deckID string) (e
 	for _, blockID := range blockIDs {
 		bt := treenode.GetBlockTree(blockID)
 		if nil == bt {
+			continue
+		}
+		// 加密笔记本不支持闪卡，移除时也跳过，避免无谓写入加密 tree
+		if IsEncryptedBox(bt.BoxID) {
 			continue
 		}
 
@@ -808,7 +1026,7 @@ func (tx *Transaction) removeBlocksDeckAttr(blockIDs []string, deckID string) (e
 		var deckIDs []string
 		if "" != deckID {
 			availableDeckIDs := getDeckIDs()
-			for _, dID := range strings.Split(deckAttrs, ",") {
+			for dID := range strings.SplitSeq(deckAttrs, ",") {
 				if dID != deckID && gulu.Str.Contains(dID, availableDeckIDs) {
 					deckIDs = append(deckIDs, dID)
 				}
@@ -827,8 +1045,8 @@ func (tx *Transaction) removeBlocksDeckAttr(blockIDs []string, deckID string) (e
 
 		tx.writeTree(tree)
 
-		cache.PutBlockIAL(blockID, parse.IAL2Map(node.KramdownIAL))
-		pushBroadcastAttrTransactions(oldAttrs, node)
+		cache.PutBlockIALInBox(blockID, tree.Box, parse.IAL2Map(node.KramdownIAL))
+		pushBlockAttrs(oldAttrs, node)
 	}
 
 	return
@@ -865,6 +1083,9 @@ func (tx *Transaction) doAddFlashcards(operation *Operation) (ret *TxErr) {
 
 	deckID := operation.DeckID
 	blockIDs := operation.BlockIDs
+	if err := ValidateFlashcardBlockIDs(blockIDs); err != nil {
+		return &TxErr{code: TxErrCodePushMsg, msg: err.Error()}
+	}
 
 	foundDeck := false
 	for _, deck := range Decks {
@@ -881,13 +1102,19 @@ func (tx *Transaction) doAddFlashcards(operation *Operation) (ret *TxErr) {
 	}
 
 	blockRoots := map[string]string{}
+	var eligibleBlockIDs []string
 	for _, blockID := range blockIDs {
 		bt := treenode.GetBlockTree(blockID)
 		if nil == bt {
 			continue
 		}
+		// 闪卡是全局调度与存储，只允许可解析的普通笔记本块写入。
+		if IsEncryptedBox(bt.BoxID) {
+			continue
+		}
 
 		blockRoots[blockID] = bt.RootID
+		eligibleBlockIDs = append(eligibleBlockIDs, blockID)
 	}
 
 	trees := map[string]*parse.Tree{}
@@ -921,8 +1148,8 @@ func (tx *Transaction) doAddFlashcards(operation *Operation) (ret *TxErr) {
 
 		tx.writeTree(tree)
 
-		cache.PutBlockIAL(blockID, parse.IAL2Map(node.KramdownIAL))
-		pushBroadcastAttrTransactions(oldAttrs, node)
+		cache.PutBlockIALInBox(blockID, tree.Box, parse.IAL2Map(node.KramdownIAL))
+		pushBlockAttrs(oldAttrs, node)
 	}
 
 	deck := Decks[deckID]
@@ -931,7 +1158,7 @@ func (tx *Transaction) doAddFlashcards(operation *Operation) (ret *TxErr) {
 		return
 	}
 
-	for _, blockID := range blockIDs {
+	for _, blockID := range eligibleBlockIDs {
 		cards := deck.GetCardsByBlockID(blockID)
 		if 0 < len(cards) {
 			// 一个块只能添加生成一张闪卡 https://github.com/siyuan-note/siyuan/issues/7476
@@ -949,6 +1176,8 @@ func (tx *Transaction) doAddFlashcards(operation *Operation) (ret *TxErr) {
 }
 
 func LoadFlashcards() {
+	confFlashcardSnapshot := Conf.LoadFlashcard()
+
 	riffSavePath := getRiffDir()
 	if err := os.MkdirAll(riffSavePath, 0755); err != nil {
 		logging.LogErrorf("create riff dir [%s] failed: %s", riffSavePath, err)
@@ -964,9 +1193,9 @@ func LoadFlashcards() {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if strings.HasSuffix(name, ".deck") {
-			deckID := strings.TrimSuffix(name, ".deck")
-			deck, loadErr := riff.LoadDeck(riffSavePath, deckID, Conf.Flashcard.RequestRetention, Conf.Flashcard.MaximumInterval, Conf.Flashcard.Weights)
+		if before, ok := strings.CutSuffix(name, ".deck"); ok {
+			deckID := before
+			deck, loadErr := riff.LoadDeck(riffSavePath, deckID, confFlashcardSnapshot.RequestRetention, confFlashcardSnapshot.MaximumInterval, confFlashcardSnapshot.Weights)
 			if nil != loadErr {
 				logging.LogErrorf("load deck [%s] failed: %s", name, loadErr)
 				continue
@@ -978,7 +1207,6 @@ func LoadFlashcards() {
 			if 0 == deck.Updated {
 				deck.Updated = deck.Created
 			}
-
 			Decks[deckID] = deck
 		}
 	}
@@ -999,10 +1227,16 @@ func RenameDeck(deckID, name string) (err error) {
 		logging.LogErrorf("save deck [%s] failed: %s", deckID, err)
 		return
 	}
+	IncSyncIfNeeded(filepath.Join(getRiffDir(), deckID+".deck"), filepath.Join(getRiffDir(), deckID+".cards"))
 	return
 }
 
 func RemoveDeck(deckID string) (err error) {
+	if !ast.IsNodeIDPattern(deckID) {
+		err = errors.New("invalid deck ID")
+		return
+	}
+
 	deckLock.Lock()
 	defer deckLock.Unlock()
 
@@ -1014,6 +1248,7 @@ func RemoveDeck(deckID string) (err error) {
 		if err = filelock.Remove(deckPath); err != nil {
 			return
 		}
+		IncSyncIfNeeded(deckPath)
 	}
 
 	cardsPath := filepath.Join(riffSavePath, deckID+".cards")
@@ -1021,6 +1256,7 @@ func RemoveDeck(deckID string) (err error) {
 		if err = filelock.Remove(cardsPath); err != nil {
 			return
 		}
+		IncSyncIfNeeded(cardsPath)
 	}
 
 	LoadFlashcards()
@@ -1030,7 +1266,11 @@ func RemoveDeck(deckID string) (err error) {
 func CreateDeck(name string) (deck *riff.Deck, err error) {
 	deckLock.Lock()
 	defer deckLock.Unlock()
-	return createDeck(name)
+	deck, err = createDeck(name)
+	if err == nil {
+		IncSyncIfNeeded(filepath.Join(getRiffDir(), deck.ID+".deck"), filepath.Join(getRiffDir(), deck.ID+".cards"))
+	}
+	return
 }
 
 func createDeck(name string) (deck *riff.Deck, err error) {
@@ -1042,8 +1282,10 @@ func createDeck(name string) (deck *riff.Deck, err error) {
 }
 
 func createDeck0(name string, deckID string) (deck *riff.Deck, err error) {
+	confFlashcardSnapshot := Conf.LoadFlashcard()
+
 	riffSavePath := getRiffDir()
-	deck, err = riff.LoadDeck(riffSavePath, deckID, Conf.Flashcard.RequestRetention, Conf.Flashcard.MaximumInterval, Conf.Flashcard.Weights)
+	deck, err = riff.LoadDeck(riffSavePath, deckID, confFlashcardSnapshot.RequestRetention, confFlashcardSnapshot.MaximumInterval, confFlashcardSnapshot.Weights)
 	if err != nil {
 		logging.LogErrorf("load deck [%s] failed: %s", deckID, err)
 		return
@@ -1079,6 +1321,16 @@ func GetDecks() (decks []*riff.Deck) {
 	return
 }
 
+func CountSupportedFlashcards(deck *riff.Deck) int {
+	deckLock.Lock()
+	defer deckLock.Unlock()
+
+	if deck == nil {
+		return 0
+	}
+	return len(filterSupportedFlashcards(deck.GetCardsByBlockIDs(deck.GetBlockIDs())))
+}
+
 func getRiffDir() string {
 	return filepath.Join(util.DataDir, "storage", "riff")
 }
@@ -1097,6 +1349,9 @@ func getDeckDueCards(deck *riff.Deck, reviewedCardIDs, blockIDs []string, newCar
 	dues := deck.Dues()
 	toChecks := map[string]riff.Card{}
 	for _, c := range dues {
+		if !isSupportedFlashcardBlock(c.BlockID()) {
+			continue
+		}
 		if 0 < len(blockIDs) && !gulu.Str.Contains(c.BlockID(), blockIDs) {
 			continue
 		}
@@ -1105,7 +1360,7 @@ func getDeckDueCards(deck *riff.Deck, reviewedCardIDs, blockIDs []string, newCar
 	}
 	var toCheckBlockIDs []string
 	var tmp []riff.Card
-	for bID, _ := range toChecks {
+	for bID := range toChecks {
 		toCheckBlockIDs = append(toCheckBlockIDs, bID)
 	}
 	checkResult := treenode.ExistBlockTrees(toCheckBlockIDs)

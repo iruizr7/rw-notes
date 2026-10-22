@@ -1,4 +1,4 @@
-// SiYuan - Refactor your thinking
+// SiYuan - From thought to insight, with agents
 // Copyright (c) 2020-present, b3log.org
 //
 // This program is free software: you can redistribute it and/or modify
@@ -59,6 +59,7 @@ func BuiltInTemplateFuncs() (ret template.FuncMap) {
 	ret["wordCount"] = wordCount
 	ret["markdown2text"] = markdown2text
 	ret["markdown2content"] = markdown2content
+	ret["countif"] = util.CountIf
 	return
 }
 
@@ -92,12 +93,12 @@ func wordCount(s string) (ret int) {
 	return
 }
 
-func pow(a, b interface{}) int64    { return int64(math.Pow(cast.ToFloat64(a), cast.ToFloat64(b))) }
-func powf(a, b interface{}) float64 { return math.Pow(cast.ToFloat64(a), cast.ToFloat64(b)) }
-func log(a, b interface{}) int64 {
+func pow(a, b any) int64    { return int64(math.Pow(cast.ToFloat64(a), cast.ToFloat64(b))) }
+func powf(a, b any) float64 { return math.Pow(cast.ToFloat64(a), cast.ToFloat64(b)) }
+func log(a, b any) int64 {
 	return int64(math.Log(cast.ToFloat64(a)) / math.Log(cast.ToFloat64(b)))
 }
-func logf(a, b interface{}) float64 { return math.Log(cast.ToFloat64(a)) / math.Log(cast.ToFloat64(b)) }
+func logf(a, b any) float64 { return math.Log(cast.ToFloat64(a)) / math.Log(cast.ToFloat64(b)) }
 
 func parseTime(dateStr string) time.Time {
 	now := time.Now()
